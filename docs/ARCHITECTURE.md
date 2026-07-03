@@ -185,8 +185,11 @@ mid-game on the reference fixture, on the development machine:
 | Rust engine | **~3.4 ms** | **~290 fps** |
 
 The remaining hot path is dominated by rectification (the precomputed gather)
-and the playfield read. Known non-hot-path gap: full-resolution morphology in
-*acquisition* solves is scalar (OpenCV's is SIMD), which makes never-locking
-menu footage slower to scan than in Python; production runs solve off-thread
-where this doesn't affect frame latency. Downscaled candidate detection is on
-the improvement roadmap.
+and the playfield read. Acquisition solves (full geometry estimation, run
+inline per frame only while *unlocked*) cost ~1 s at 1080p — the sliding
+NCC uses integral-image statistics with an exact integer cross term, and the
+morphology kernels run as exact separable passes, but OpenCV's FFT-based
+`matchTemplate` is still faster on very large search windows. In production
+this never touches frame latency (solves run off-thread / in a Web Worker);
+downscaled candidate detection is on the improvement roadmap to make
+acquisition itself near-instant.

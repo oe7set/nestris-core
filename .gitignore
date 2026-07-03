@@ -6,5 +6,6 @@ crates/nestris-wasm/pkg/
 testdata/stages/
 *.jsonl
 !testdata/cv/**/*.jsonl
+*.log
 _scratch/
 .DS_Store
