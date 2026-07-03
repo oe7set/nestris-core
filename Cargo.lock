@@ -2221,6 +2221,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nestris-ngf"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "nestris-engine",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nestris-vision"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,20 @@
+[package]
+name = "nestris-ngf"
+description = "NGF (NestrisChamps Game Format) codec, game recorder and replay engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["gz", "std"]
+# Gzip support (.ngf.gz). Uses flate2's default pure-Rust backend
+# (miniz_oxide), which is wasm-clean; do not switch to the zlib backend.
+gz = ["dep:flate2"]
+# Reader/writer adapters over std::io (the codec itself is sans-io).
+std = []
+
+[dependencies]
+nestris-engine = { workspace = true }
+thiserror = { workspace = true }
+flate2 = { version = "1", optional = true }
