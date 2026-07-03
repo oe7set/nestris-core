@@ -58,6 +58,10 @@ pub struct FrameProcessor {
     lock: CalibrationLock,
     last_lock_state: LockState,
     last_level: Option<i64>,
+    last_lines: Option<i64>,
+    /// Palette hint for the frames right after a level-crossing clear
+    /// (value, frames remaining) — `recognition.level_hint_on_clear`.
+    level_hint: Option<(i64, u32)>,
     last_state: Option<GameState>,
     last_next: Option<crate::enums::Piece>,
     pending_occupancy: Option<Grid<bool>>,
@@ -108,6 +112,8 @@ impl FrameProcessor {
             ),
             last_lock_state: LockState::Unlocked,
             last_level: None,
+            last_lines: None,
+            level_hint: None,
             last_state: None,
             last_next: None,
             pending_occupancy: None,
@@ -163,6 +169,8 @@ impl FrameProcessor {
             latch.reset();
         }
         self.last_level = None;
+        self.last_lines = None;
+        self.level_hint = None;
         self.last_state = None;
         self.last_next = None;
         self.prev_occupancy = None;
@@ -246,6 +254,21 @@ impl FrameProcessor {
         }
         if fused.level.is_some() {
             self.last_level = fused.level;
+            // A caught-up fused level supersedes the transition hint.
+            if let Some((hint, _)) = self.level_hint
+                && fused.level == Some(hint)
+            {
+                self.level_hint = None;
+            }
+        }
+        if fused.lines.is_some() {
+            self.last_lines = fused.lines;
+        }
+        if let Some((_, frames_left)) = &mut self.level_hint {
+            *frames_left = frames_left.saturating_sub(1);
+            if *frames_left == 0 {
+                self.level_hint = None;
+            }
         }
         self.last_state = Some(fused.state);
         let stats = self.stats.update(&fused);
@@ -276,6 +299,8 @@ impl FrameProcessor {
         self.clear_anim.reset();
         self.stabilizer.reset();
         self.last_level = None;
+        self.last_lines = None;
+        self.level_hint = None;
         self.last_next = None;
         self.prev_occupancy = None;
         self.pending_occupancy = None;
@@ -353,28 +378,56 @@ impl FrameProcessor {
             Some(BaseMode::Dec),
         );
         let next_piece = NextPieceReader::read(canon, &layout.next_box);
+        // The level-transition hint colors the first post-clear frames with
+        // the next level's palette until fusion catches up.
+        let palette_level = self
+            .level_hint
+            .filter(|_| self.config.recognition.level_hint_on_clear)
+            .map(|(level, _)| level)
+            .or(self.last_level);
         let mut playfield = PlayfieldReader::read_with(
             canon,
             gray,
             layout,
-            self.last_level,
+            palette_level,
             ColorTuning::from_config(&self.config.recognition),
         );
         if self.config.recognition.playfield_stabilizer {
             playfield = self.stabilizer.update(&playfield);
         }
 
+        let robust = self.config.recognition.clear_prediction;
         let mut animating = false;
+        let mut curtain = false;
         if self.config.recognition.freeze_on_clear_animation {
             let frame_luma_mean =
                 gray.data.iter().map(|&v| v as f64).sum::<f64>() / gray.data.len() as f64;
+            // Robust mode: never *start* an animation while paused (a menu
+            // flash is not a clear) or while the game-over curtain sweeps.
+            let suppress_entry = robust
+                && (self.last_state == Some(GameState::Paused)
+                    || self.clear_anim.curtain_active());
+            let was_animating = self.clear_anim.animating();
             animating = self
                 .clear_anim
-                .update(&playfield.occupancy, frame_luma_mean);
+                .update(&playfield.occupancy, frame_luma_mean, suppress_entry);
             self.live_flash = self.clear_anim.flash_active();
+            curtain = robust && self.clear_anim.curtain_active();
+
+            // Validate the finished animation against its prediction.
+            if robust
+                && was_animating
+                && !animating
+                && let Some(prediction) = self.clear_anim.take_finished_prediction()
+            {
+                self.validate_clear_prediction(frame, &prediction, &playfield.occupancy);
+            }
         }
         self.live_playfield = Some(playfield.grid_as_rows());
         self.live_anim = animating;
+        // The curtain withholds the playfield exactly like a clear animation:
+        // fusion holds the last real stack instead of ingesting the sweep.
+        let animating = animating || curtain;
 
         reading.score = score.value;
         reading.score_confidence = score.confidence as f64;
@@ -423,6 +476,44 @@ impl FrameProcessor {
             self.pending_occupancy = Some(playfield.occupancy);
         }
         reading
+    }
+
+    /// Compare a finished clear animation's predicted board against the
+    /// first fresh reading; emit an observability event and arm the level
+    /// hint when the clear crosses a x10 line boundary.
+    fn validate_clear_prediction(
+        &mut self,
+        frame: &Frame,
+        prediction: &crate::recognition::clear_anim::ClearPrediction,
+        observed: &Grid<bool>,
+    ) {
+        const MAX_MISMATCHES: usize = 3;
+        const HINT_FRAMES: u32 = 30;
+        let mismatches =
+            crate::recognition::clear_anim::prediction_mismatches(&prediction.occupancy, observed);
+        let ok = mismatches <= MAX_MISMATCHES;
+        self.frame_events.push(Event {
+            ts: frame.ts,
+            field: "playfield".into(),
+            reason: if ok {
+                "clear_prediction_ok".into()
+            } else {
+                "clear_prediction_mismatch".into()
+            },
+            severity: if ok { "info".into() } else { "warn".into() },
+            old: Some(serde_json::Value::from(prediction.cleared_rows)),
+            new: Some(serde_json::Value::from(mismatches)),
+            confidence: None,
+        });
+
+        if self.config.recognition.level_hint_on_clear
+            && let (Some(lines), Some(level)) = (self.last_lines, self.last_level)
+        {
+            let after = lines + prediction.cleared_rows as i64;
+            if after / 10 > lines / 10 {
+                self.level_hint = Some((level + 1, HINT_FRAMES));
+            }
+        }
     }
 
     fn build_output(
