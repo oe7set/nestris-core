@@ -1,2 +1,191 @@
-//! WebAssembly bindings (Phase 7). The Phase 0 skeleton only proves the
-//! engine compiles for `wasm32-unknown-unknown`.
+//! WebAssembly bindings: one engine instance per page plus a standalone
+//! `Solver` for the recalibration Web Worker.
+//!
+//! Per-frame JS↔WASM contract (exactly one copy per frame): JS asks for
+//! `frame_ptr(w, h)`, copies the RGBA `ImageData` bytes into linear memory,
+//! then calls `process(ts)` and receives the OutputFrame JSON. Overlay
+//! drawing reads `lock_quad()` / `canonical_rgba()` without JSON parsing.
+
+use wasm_bindgen::prelude::*;
+
+use nestris_engine::config::EngineConfig;
+use nestris_engine::frame::Frame;
+use nestris_engine::geometry_cal::calibration::{GeometryResult, estimate_geometry};
+use nestris_engine::layout::get_layout;
+use nestris_engine::processor::FrameProcessor;
+use nestris_vision::homography::{Mat3, mat3_inv, project};
+
+fn parse_config(config_json: &str) -> EngineConfig {
+    if config_json.trim().is_empty() {
+        EngineConfig::default()
+    } else {
+        serde_json::from_str(config_json).unwrap_or_default()
+    }
+}
+
+/// The main-thread engine: feeds frames, emits OutputFrame JSON.
+#[wasm_bindgen]
+pub struct Engine {
+    processor: FrameProcessor,
+    rgba: Vec<u8>,
+    width: usize,
+    height: usize,
+    seq: i64,
+}
+
+#[wasm_bindgen]
+impl Engine {
+    #[wasm_bindgen(constructor)]
+    pub fn new(config_json: &str) -> Engine {
+        Engine {
+            processor: FrameProcessor::new(parse_config(config_json)),
+            rgba: Vec::new(),
+            width: 0,
+            height: 0,
+            seq: 0,
+        }
+    }
+
+    /// Pointer to an RGBA frame buffer of `width*height*4` bytes; JS copies
+    /// `ImageData.data` here before calling [`Engine::process`].
+    pub fn frame_ptr(&mut self, width: usize, height: usize) -> *mut u8 {
+        self.width = width;
+        self.height = height;
+        self.rgba.resize(width * height * 4, 0);
+        self.rgba.as_mut_ptr()
+    }
+
+    /// Process the frame currently in the buffer; returns OutputFrame JSON.
+    pub fn process(&mut self, ts: f64) -> String {
+        let mut frame = Frame::from_rgba(&self.rgba, self.width, self.height, self.seq, ts);
+        frame.ts = ts;
+        self.seq += 1;
+        self.processor.process(&frame).to_json()
+    }
+
+    /// Signal a stream discontinuity (source switch / seek) before the next
+    /// frame: temporal tracking resets, the geometry lock is kept.
+    pub fn mark_discontinuity(&mut self) {
+        self.processor.reset_tracking();
+    }
+
+    pub fn reset_lock(&mut self) {
+        self.processor.reset_lock();
+    }
+
+    /// Whether the host should run a background solve on the current frame
+    /// (drive from a Web Worker via [`Solver`], feed back via
+    /// [`Engine::offer_solution`]).
+    pub fn wants_background_solve(&mut self) -> bool {
+        self.processor.lock().wants_background_solve()
+    }
+
+    /// Adopt a Worker-computed solve: 9 homography values + confidence.
+    pub fn offer_solution(&mut self, h: Vec<f64>, confidence: f64) {
+        if h.len() != 9 {
+            return;
+        }
+        let mut mat: Mat3 = [0.0; 9];
+        mat.copy_from_slice(&h);
+        self.processor.lock().offer_solution(GeometryResult {
+            homography: Some(mat),
+            confidence,
+            undistort: None,
+            residual: 0.0,
+        });
+    }
+
+    /// Source-space corners of the canonical raster (tl,tr,br,bl as x,y
+    /// pairs, 8 values), for the raw-preview overlay. Empty when unlocked.
+    pub fn lock_quad(&mut self) -> Vec<f64> {
+        let Some(rectifier) = self.processor.lock().rectifier() else {
+            return Vec::new();
+        };
+        let Some(inv) = mat3_inv(rectifier.matrix()) else {
+            return Vec::new();
+        };
+        let corners = [(0.0, 0.0), (256.0, 0.0), (256.0, 240.0), (0.0, 240.0)];
+        corners
+            .iter()
+            .flat_map(|&(x, y)| {
+                let (sx, sy) = project(&inv, x, y);
+                [sx, sy]
+            })
+            .collect()
+    }
+
+    /// The last rectified canonical frame as RGBA bytes (256*240*4), for the
+    /// canonical preview canvas. Empty when no lock.
+    pub fn canonical_rgba(&self) -> Vec<u8> {
+        let Some(canon) = self.processor.last_canonical() else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(canon.width * canon.height * 4);
+        for px in canon.data.chunks_exact(3) {
+            out.extend_from_slice(&[px[2], px[1], px[0], 255]);
+        }
+        out
+    }
+
+    pub fn canonical_width(&self) -> usize {
+        get_layout();
+        256
+    }
+
+    pub fn canonical_height(&self) -> usize {
+        240
+    }
+
+    pub fn lock_state(&self) -> String {
+        self.processor.lock_state().name().to_string()
+    }
+}
+
+/// Standalone geometry solver for the recalibration Web Worker: its own wasm
+/// instance receives downscaled/raw RGBA frames and returns solve JSON.
+#[wasm_bindgen]
+pub struct Solver {
+    rgba: Vec<u8>,
+    width: usize,
+    height: usize,
+}
+
+#[wasm_bindgen]
+impl Solver {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Solver {
+        Solver {
+            rgba: Vec::new(),
+            width: 0,
+            height: 0,
+        }
+    }
+
+    pub fn frame_ptr(&mut self, width: usize, height: usize) -> *mut u8 {
+        self.width = width;
+        self.height = height;
+        self.rgba.resize(width * height * 4, 0);
+        self.rgba.as_mut_ptr()
+    }
+
+    /// Solve the buffered frame; returns `{"h":[...9],"confidence":x}` JSON
+    /// or `"null"` when no geometry was found.
+    pub fn solve(&mut self, seed: u64) -> String {
+        let frame = Frame::from_rgba(&self.rgba, self.width, self.height, 0, 0.0);
+        let result = estimate_geometry(&frame.image, get_layout(), None, false, seed);
+        match result.homography {
+            Some(h) => format!(
+                "{{\"h\":{:?},\"confidence\":{}}}",
+                h.to_vec(),
+                result.confidence
+            ),
+            None => "null".to_string(),
+        }
+    }
+}
+
+impl Default for Solver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
