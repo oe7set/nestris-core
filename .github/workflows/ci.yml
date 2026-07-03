@@ -34,6 +34,24 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      # Keeps the engine wasm-clean from day one, before the wasm-pack
-      # packaging lands in Phase 7.
       - run: cargo check -p nestris-engine -p nestris-wasm --target wasm32-unknown-unknown
+      - run: cargo install wasm-pack --locked
+      - run: wasm-pack build crates/nestris-wasm --target web --release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      # check needs no NDK linker; keeps the UniFFI surface building for ARM.
+      - run: cargo check -p nestris-android --target aarch64-linux-android

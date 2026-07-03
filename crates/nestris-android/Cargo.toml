@@ -8,6 +8,13 @@ repository.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+name = "nestris_android"
 
 [dependencies]
 nestris-engine = { workspace = true }
+nestris-vision = { workspace = true }
+serde_json = { workspace = true }
+uniffi = "0.29"
+
+[build-dependencies]
+uniffi = { version = "0.29", features = ["build"] }
