@@ -13,7 +13,9 @@ use nestris_engine::config::EngineConfig;
 use nestris_engine::processor::FrameProcessor;
 use nestris_host::capture_ffmpeg::{self, VideoDecoder};
 use nestris_host::recalib_thread::RecalibThread;
+use nestris_host::recording::{self, RecordingSink};
 use nestris_host::sinks::{JsonlSink, MultiSink, Sink, WebSocketSink};
+use nestris_ngf::recorder::{GameRecorder, RecorderConfig};
 
 #[derive(Parser)]
 #[command(name = "nestris", about = "NES-Tetris OCR engine (Rust port)")]
@@ -60,6 +62,18 @@ enum Cmd {
         /// of the background recalibration thread.
         #[arg(long)]
         oracle_parity: bool,
+        /// Disable the automatic per-game NGF recording.
+        #[arg(long)]
+        no_record: bool,
+        /// Recording output directory (default: Documents\nestris-recordings).
+        #[arg(long)]
+        record_dir: Option<PathBuf>,
+        /// Save recordings as plain .ngf instead of gzipped .ngf.gz.
+        #[arg(long)]
+        record_raw: bool,
+        /// Also record games already in progress when capture starts.
+        #[arg(long)]
+        record_partial: bool,
     },
     /// Per-frame latency benchmark (p50/p90/p99).
     Bench {
@@ -125,6 +139,10 @@ fn main() -> Result<()> {
             start,
             frames,
             oracle_parity,
+            no_record,
+            record_dir,
+            record_raw,
+            record_partial,
         } => run(RunArgs {
             input,
             jsonl,
@@ -136,6 +154,10 @@ fn main() -> Result<()> {
             start,
             frames,
             oracle_parity,
+            no_record,
+            record_dir,
+            record_raw,
+            record_partial,
         }),
         Cmd::Bench {
             input,
@@ -167,6 +189,10 @@ struct RunArgs {
     start: f64,
     frames: u64,
     oracle_parity: bool,
+    no_record: bool,
+    record_dir: Option<PathBuf>,
+    record_raw: bool,
+    record_partial: bool,
 }
 
 fn run(args: RunArgs) -> Result<()> {
@@ -192,6 +218,23 @@ fn run(args: RunArgs) -> Result<()> {
     }
     let mut sink = MultiSink { sinks };
 
+    // Per-game NGF recording (on by default; --no-record to disable).
+    let mut recording = if args.no_record {
+        None
+    } else {
+        let dir = args
+            .record_dir
+            .clone()
+            .unwrap_or_else(recording::default_recording_dir);
+        let sink = RecordingSink::new(dir, !args.record_raw)?;
+        eprintln!("recording games to {}", sink.dir().display());
+        let recorder = GameRecorder::new(RecorderConfig {
+            record_partial: args.record_partial,
+            ..Default::default()
+        });
+        Some((recorder, sink))
+    };
+
     let mut recalib = background.then(RecalibThread::start);
     let mut count = 0u64;
     while let Some(frame) = decoder.next_frame()? {
@@ -203,7 +246,18 @@ fn run(args: RunArgs) -> Result<()> {
             recalib.drive(&mut processor, &frame);
         }
         sink.publish(&output.to_json());
+        if let Some((recorder, rec_sink)) = &mut recording {
+            let events = recorder.push(&output);
+            for path in rec_sink.handle(recorder, events)? {
+                eprintln!("recording saved: {}", path.display());
+            }
+        }
         count += 1;
+    }
+    if let Some((recorder, rec_sink)) = &mut recording
+        && let Some(path) = rec_sink.finalize(recorder)?
+    {
+        eprintln!("recording saved: {}", path.display());
     }
     sink.flush();
     eprintln!("{count} frames processed");

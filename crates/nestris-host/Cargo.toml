@@ -9,6 +9,8 @@ repository.workspace = true
 [dependencies]
 nestris-engine = { workspace = true }
 nestris-vision = { workspace = true }
+nestris-ngf = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 tungstenite = "0.28"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

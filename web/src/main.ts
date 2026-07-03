@@ -18,6 +18,22 @@ function showHint(text: string, isError = false): void {
   hint.style.color = isError ? "#f83800" : "";
 }
 
+/** Save a finished .ngf.gz recording via a browser download. */
+function downloadRecording(bytes: Uint8Array): void {
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace("T", "-")
+    .slice(0, 15);
+  const blob = new Blob([bytes as BlobPart], { type: "application/gzip" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `nestris_${stamp}.ngf.gz`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 async function boot(): Promise<void> {
   const views = new Views();
   const source = new CaptureSource();
@@ -59,6 +75,11 @@ async function boot(): Promise<void> {
       worker.postMessage({ data: copy, width: w, height: h, seed: frame.seq }, [
         copy,
       ]);
+    }
+
+    // Auto-save finished game recordings as .ngf.gz downloads.
+    while (engine.hasFinishedGame()) {
+      downloadRecording(engine.takeFinishedGame());
     }
 
     views.drawSource(source.video, engine.lockQuad());

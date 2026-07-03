@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 nestris-engine = { workspace = true }
 nestris-host = { workspace = true }
+nestris-ngf = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 clap = { version = "4", features = ["derive"] }

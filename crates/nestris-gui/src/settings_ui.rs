@@ -9,17 +9,47 @@ use serde::{Deserialize, Serialize};
 
 use crate::worker::SinkOptions;
 
+/// Bumped when new defaults should be applied to settings files written by
+/// older versions (see [`GuiSettings::load`]).
+const SETTINGS_VERSION: u32 = 2;
+
 /// Everything the GUI persists between sessions.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GuiSettings {
+    pub settings_version: u32,
     pub engine: EngineConfig,
     pub ws_enabled: bool,
     pub ws_addr: String,
     pub jsonl_enabled: bool,
     pub jsonl_path: String,
+    /// Record every detected game as .ngf.gz.
+    pub record_enabled: bool,
+    /// Recording directory; empty = Documents\nestris-recordings.
+    pub record_dir: String,
     pub last_source: String,
     pub speed: f32,
+}
+
+impl Default for GuiSettings {
+    fn default() -> Self {
+        let mut engine = EngineConfig::default();
+        // GUI default: continuous geometry tracking on. The engine-level
+        // default stays off (oracle parity for CLI verification runs).
+        engine.tracking.enabled = true;
+        Self {
+            settings_version: SETTINGS_VERSION,
+            engine,
+            ws_enabled: false,
+            ws_addr: String::new(),
+            jsonl_enabled: false,
+            jsonl_path: String::new(),
+            record_enabled: true,
+            record_dir: String::new(),
+            last_source: String::new(),
+            speed: 1.0,
+        }
+    }
 }
 
 impl GuiSettings {
@@ -33,6 +63,13 @@ impl GuiSettings {
         }
         if settings.speed <= 0.0 && settings.speed != -1.0 {
             settings.speed = 1.0;
+        }
+        // One-time migration for settings files from before these features
+        // existed: enable their GUI defaults.
+        if settings.settings_version < 2 {
+            settings.engine.tracking.enabled = true;
+            settings.record_enabled = true;
+            settings.settings_version = SETTINGS_VERSION;
         }
         settings
     }
@@ -52,6 +89,8 @@ impl GuiSettings {
             jsonl_path: (self.jsonl_enabled && !self.jsonl_path.is_empty())
                 .then(|| PathBuf::from(&self.jsonl_path)),
             ws_addr: self.ws_enabled.then(|| self.ws_addr.clone()),
+            record: self.record_enabled,
+            record_dir: (!self.record_dir.is_empty()).then(|| PathBuf::from(&self.record_dir)),
         }
     }
 }
@@ -199,7 +238,49 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut GuiS
                 );
             });
 
+            egui::CollapsingHeader::new("Tracking").show(ui, |ui| {
+                ui.checkbox(
+                    &mut e.tracking.enabled,
+                    "Continuous geometry tracking (handheld footage)",
+                )
+                .on_hover_text(
+                    "Follows small per-frame camera motion while locked. \
+                     Idles on stable capture-card sources.",
+                );
+                ui.add_enabled_ui(e.tracking.enabled, |ui| {
+                    let mut radius = e.tracking.search_radius_px as i32;
+                    ui.add(
+                        egui::Slider::new(&mut radius, 4..=16).text("Label search radius (px)"),
+                    );
+                    e.tracking.search_radius_px = radius as u32;
+                    slider_f64(
+                        ui,
+                        &mut e.tracking.damping,
+                        0.1..=1.0,
+                        "Correction damping",
+                    );
+                });
+            });
+
             egui::CollapsingHeader::new("Output").show(ui, |ui| {
+                ui.checkbox(&mut settings.record_enabled, "Record games (.ngf.gz)")
+                    .on_hover_text(
+                        "Automatically saves one NestrisChamps-format recording per game",
+                    );
+                ui.add_enabled_ui(settings.record_enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut settings.record_dir)
+                                .hint_text("Documents\\nestris-recordings"),
+                        );
+                        if ui.button("…").clicked()
+                            && let Some(dir) = rfd::FileDialog::new().pick_folder()
+                        {
+                            settings.record_dir = dir.to_string_lossy().into_owned();
+                        }
+                    });
+                });
+                ui.separator();
                 ui.checkbox(&mut settings.ws_enabled, "WebSocket broadcast");
                 ui.add_enabled(
                     settings.ws_enabled,

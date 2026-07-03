@@ -5,4 +5,5 @@
 
 pub mod capture_ffmpeg;
 pub mod recalib_thread;
+pub mod recording;
 pub mod sinks;

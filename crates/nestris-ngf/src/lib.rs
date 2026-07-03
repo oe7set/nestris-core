@@ -19,5 +19,7 @@
 pub mod codec;
 #[cfg(feature = "std")]
 pub mod io;
+pub mod recorder;
 
 pub use codec::{NgfError, NgfFrame, decode_frame, encode_v3};
+pub use recorder::{GameRecorder, RecorderConfig, RecorderEvent};

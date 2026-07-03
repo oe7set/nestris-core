@@ -13,7 +13,9 @@ use nestris_engine::output::OutputFrame;
 use nestris_engine::processor::FrameProcessor;
 use nestris_host::capture_ffmpeg::VideoDecoder;
 use nestris_host::recalib_thread::RecalibThread;
+use nestris_host::recording::{RecordingSink, default_recording_dir};
 use nestris_host::sinks::{JsonlSink, MultiSink, Sink, WebSocketSink};
+use nestris_ngf::recorder::{GameRecorder, RecorderConfig};
 use nestris_vision::homography::{mat3_inv, project};
 
 /// UI → worker control.
@@ -43,10 +45,25 @@ pub struct GuiUpdate {
 }
 
 /// Host-side sink options (mirrors the CLI flags).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SinkOptions {
     pub jsonl_path: Option<std::path::PathBuf>,
     pub ws_addr: Option<String>,
+    /// Record every detected game as an .ngf.gz file.
+    pub record: bool,
+    /// Recording directory (`None` = Documents\nestris-recordings).
+    pub record_dir: Option<std::path::PathBuf>,
+}
+
+impl Default for SinkOptions {
+    fn default() -> Self {
+        Self {
+            jsonl_path: None,
+            ws_addr: None,
+            record: true,
+            record_dir: None,
+        }
+    }
 }
 
 pub struct WorkerHandle {
@@ -106,6 +123,17 @@ fn run(
     }
     let mut sink = MultiSink { sinks };
 
+    let mut recording = if sink_opts.record {
+        let dir = sink_opts
+            .record_dir
+            .clone()
+            .unwrap_or_else(default_recording_dir);
+        let rec_sink = RecordingSink::new(dir, true)?;
+        Some((GameRecorder::new(RecorderConfig::default()), rec_sink))
+    } else {
+        None
+    };
+
     let mut paused = false;
     let mut frame_idx: u64 = 0;
     let mut discontinuity = false;
@@ -115,11 +143,11 @@ fn run(
     let mut pace_anchor = Instant::now();
     let mut pace_frames = 0u64;
 
-    loop {
+    'pipeline: loop {
         // Drain control commands.
         loop {
             match cmd_rx.try_recv() {
-                Ok(Cmd::Stop) => return Ok(()),
+                Ok(Cmd::Stop) => break 'pipeline,
                 Ok(Cmd::Pause(p)) => {
                     paused = p;
                     pace_anchor = Instant::now();
@@ -138,11 +166,16 @@ fn run(
                         discontinuity = true;
                         pace_anchor = Instant::now();
                         pace_frames = 0;
+                        // A seek tears the game's frame continuity: drop the
+                        // partial recording instead of saving a spliced game.
+                        if let Some((recorder, rec_sink)) = &mut recording {
+                            rec_sink.abort(recorder);
+                        }
                     }
                 }
                 Ok(Cmd::ResetLock) => processor.reset_lock(),
                 Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return Ok(()),
+                Err(TryRecvError::Disconnected) => break 'pipeline,
             }
         }
         if paused {
@@ -151,7 +184,7 @@ fn run(
         }
 
         let Some(mut frame) = decoder.next_frame()? else {
-            return Ok(()); // end of stream
+            break 'pipeline; // end of stream
         };
         if !live {
             frame.ts = start_s + frame_idx as f64 / fps;
@@ -176,6 +209,12 @@ fn run(
             recalib.drive(&mut processor, &frame);
         }
         sink.publish(&output.to_json());
+        if let Some((recorder, rec_sink)) = &mut recording {
+            let events = recorder.push(&output);
+            for path in rec_sink.handle(recorder, events)? {
+                eprintln!("recording saved: {}", path.display());
+            }
+        }
 
         fps_counter += 1;
         if fps_window.elapsed() >= Duration::from_secs(1) {
@@ -186,9 +225,17 @@ fn run(
 
         let update = build_update(&mut processor, &frame, output, duration_s, fps_value);
         if update_tx.send(Box::new(update)).is_err() {
-            return Ok(()); // UI gone
+            break 'pipeline; // UI gone
         }
     }
+
+    // Graceful shutdown: persist a still-running recording.
+    if let Some((recorder, rec_sink)) = &mut recording
+        && let Some(path) = rec_sink.finalize(recorder)?
+    {
+        eprintln!("recording saved: {}", path.display());
+    }
+    Ok(())
 }
 
 fn build_update(

@@ -8,11 +8,14 @@
 
 use wasm_bindgen::prelude::*;
 
+use std::collections::VecDeque;
+
 use nestris_engine::config::EngineConfig;
 use nestris_engine::frame::Frame;
 use nestris_engine::geometry_cal::calibration::{GeometryResult, estimate_geometry};
 use nestris_engine::layout::get_layout;
 use nestris_engine::processor::FrameProcessor;
+use nestris_ngf::recorder::{GameRecorder, RecorderConfig, RecorderEvent};
 use nestris_vision::homography::{Mat3, mat3_inv, project};
 
 fn parse_config(config_json: &str) -> EngineConfig {
@@ -31,6 +34,19 @@ pub struct Engine {
     width: usize,
     height: usize,
     seq: i64,
+    /// Per-game NGF recorder (on by default; `set_recording` toggles).
+    recorder: Option<GameRecorder>,
+    /// Finished recordings as gzipped .ngf.gz bytes, awaiting pickup by JS.
+    finished_games: VecDeque<Vec<u8>>,
+}
+
+fn browser_recorder() -> GameRecorder {
+    GameRecorder::new(RecorderConfig {
+        // Browser sources (file/camera) often start mid-game; record those
+        // partial games too instead of waiting for a new-game boundary.
+        record_partial: true,
+        ..Default::default()
+    })
 }
 
 #[wasm_bindgen]
@@ -43,6 +59,8 @@ impl Engine {
             width: 0,
             height: 0,
             seq: 0,
+            recorder: Some(browser_recorder()),
+            finished_games: VecDeque::new(),
         }
     }
 
@@ -60,13 +78,52 @@ impl Engine {
         let mut frame = Frame::from_rgba(&self.rgba, self.width, self.height, self.seq, ts);
         frame.ts = ts;
         self.seq += 1;
-        self.processor.process(&frame).to_json()
+        let output = self.processor.process(&frame);
+        if let Some(recorder) = &mut self.recorder {
+            for event in recorder.push(&output) {
+                if let RecorderEvent::GameFinished { bytes, .. } = event
+                    && let Ok(gz) = nestris_ngf::io::compress_gz(&bytes)
+                {
+                    self.finished_games.push_back(gz);
+                }
+            }
+        }
+        output.to_json()
+    }
+
+    /// Enable or disable per-game NGF recording (enabled by default).
+    /// Disabling discards any partially recorded game.
+    pub fn set_recording(&mut self, enabled: bool) {
+        match (enabled, self.recorder.is_some()) {
+            (true, false) => self.recorder = Some(browser_recorder()),
+            (false, true) => self.recorder = None,
+            _ => {}
+        }
+    }
+
+    pub fn recording(&self) -> bool {
+        self.recorder.is_some()
+    }
+
+    /// Whether a finished game recording is waiting for pickup.
+    pub fn has_finished_game(&self) -> bool {
+        !self.finished_games.is_empty()
+    }
+
+    /// Take the oldest finished recording as gzipped .ngf.gz bytes
+    /// (empty when none is pending).
+    pub fn take_finished_game(&mut self) -> Vec<u8> {
+        self.finished_games.pop_front().unwrap_or_default()
     }
 
     /// Signal a stream discontinuity (source switch / seek) before the next
-    /// frame: temporal tracking resets, the geometry lock is kept.
+    /// frame: temporal tracking resets, the geometry lock is kept. A partial
+    /// game recording is dropped — its frame continuity is torn.
     pub fn mark_discontinuity(&mut self) {
         self.processor.reset_tracking();
+        if let Some(recorder) = &mut self.recorder {
+            recorder.abort();
+        }
     }
 
     pub fn reset_lock(&mut self) {

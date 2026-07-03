@@ -57,4 +57,18 @@ export class NestrisEngine {
   resetLock(): void {
     this.engine.reset_lock();
   }
+
+  /** Toggle per-game NGF recording (enabled by default). */
+  setRecording(enabled: boolean): void {
+    this.engine.set_recording(enabled);
+  }
+
+  hasFinishedGame(): boolean {
+    return this.engine.has_finished_game();
+  }
+
+  /** Oldest finished recording as gzipped .ngf.gz bytes (empty when none). */
+  takeFinishedGame(): Uint8Array {
+    return this.engine.take_finished_game();
+  }
 }
