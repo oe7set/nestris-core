@@ -49,6 +49,28 @@ $env:NESTRIS_FIXTURES_DIR = "D:\Projekte\Retroverse\NestrisLTM_OCR\fixtures"
 - `nestris-cli replay-readings` / `replay-canonical` / `diff` compare the Rust
   stages against those artifacts with a per-field tolerance policy.
 
+## Web GUI
+
+```sh
+cd web && npm install && npm run dev   # rebuild wasm first when the engine changed:
+wasm-pack build crates/nestris-wasm --target web --release
+```
+
+Open the printed URL, then drop a video file / open the camera / share a
+screen. The recalibration solver runs in a Web Worker; the engine itself
+stays on the main thread with one RGBA copy per frame.
+
+## Live capture (Windows)
+
+```sh
+nestris list-devices
+nestris run --input "dshow:YOUR CAPTURE DEVICE" --ws 127.0.0.1:8765
+```
+
 ## Status
 
-Bootstrapping (Phase 0). See the phase plan in the commit history.
+Engine, CLI, WASM + web GUI, and the Android UniFFI stub are implemented and
+verified against the Python implementation: recognition/state layers replay
+byte-exact (18 000 frames across 15 fixtures), the full pipeline scores 100%
+on all exact-class fields on the reference fixture, and the native hot path
+runs at ~3.4 ms p50 per frame (Python: ~12.8 ms).
