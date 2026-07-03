@@ -1,0 +1,24 @@
+[package]
+name = "nestris-engine"
+description = "Sans-io NES-Tetris OCR engine: layout, recognition, state fusion, stats, per-frame processor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nestris-vision = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+png = { workspace = true }
+
+[features]
+default = []
+# Native-only data parallelism for per-cell / per-digit work; must stay off
+# for wasm builds.
+parallel = ["dep:rayon"]
+
+[dependencies.rayon]
+version = "1"
+optional = true

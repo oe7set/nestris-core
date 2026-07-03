@@ -1,0 +1,14 @@
+[package]
+name = "nestris-vision"
+description = "Pure-Rust CV primitives replicating the OpenCV/numpy routines the engine was tuned against"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+png = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

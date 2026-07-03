@@ -1,0 +1,13 @@
+[package]
+name = "nestris-android"
+description = "UniFFI bindings stub for the Android frontend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nestris-engine = { workspace = true }

@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+web/node_modules/
+web/dist/
+crates/nestris-wasm/pkg/
+testdata/stages/
+*.jsonl
+!testdata/cv/**/*.jsonl
+_scratch/
+.DS_Store

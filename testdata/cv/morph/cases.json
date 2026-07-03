@@ -1,0 +1,22 @@
+[
+ {
+  "name": "mask01",
+  "ops": [
+   "close_k3_i2",
+   "open_k3_i1",
+   "open_k5_i1",
+   "erode_k3",
+   "dilate_k3"
+  ]
+ },
+ {
+  "name": "bin255",
+  "ops": [
+   "close_k3_i2",
+   "open_k3_i1",
+   "open_k5_i1",
+   "erode_k3",
+   "dilate_k3"
+  ]
+ }
+]

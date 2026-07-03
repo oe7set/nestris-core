@@ -1,0 +1,22 @@
+[
+ {
+  "name": "crop_half",
+  "out_w": 64,
+  "out_h": 48
+ },
+ {
+  "name": "crop_frac",
+  "out_w": 85,
+  "out_h": 61
+ },
+ {
+  "name": "label_down_aniso",
+  "out_w": 38,
+  "out_h": 4
+ },
+ {
+  "name": "label_up_aniso",
+  "out_w": 72,
+  "out_h": 9
+ }
+]

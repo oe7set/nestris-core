@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ErwinSpitaler/nestris-core"
+
+[workspace.dependencies]
+nestris-vision = { path = "crates/nestris-vision" }
+nestris-engine = { path = "crates/nestris-engine" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+png = "0.17"
+anyhow = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# Fast enough for per-frame CV work while keeping debuggability in dev builds
+# of everything above the vision crate.
+[profile.dev.package.nestris-vision]
+opt-level = 2

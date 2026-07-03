@@ -1,0 +1,22 @@
+[
+ {
+  "name": "noise",
+  "w": 64,
+  "h": 64
+ },
+ {
+  "name": "gradient",
+  "w": 64,
+  "h": 64
+ },
+ {
+  "name": "tetris01_crop",
+  "w": 128,
+  "h": 96
+ },
+ {
+  "name": "crt_crop",
+  "w": 128,
+  "h": 96
+ }
+]

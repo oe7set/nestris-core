@@ -1,0 +1,16 @@
+[package]
+name = "nestris-cli"
+description = "Native frontend: ffmpeg-pipe capture, JSONL/WebSocket sinks, verification commands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nestris"
+path = "src/main.rs"
+
+[dependencies]
+nestris-engine = { workspace = true, features = ["parallel"] }
+anyhow = { workspace = true }
+serde_json = { workspace = true }

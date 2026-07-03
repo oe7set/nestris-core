@@ -1,0 +1,14 @@
+[
+ {
+  "name": "noise",
+  "thresh": 125.0
+ },
+ {
+  "name": "bimodal",
+  "thresh": 59.0
+ },
+ {
+  "name": "next_box",
+  "thresh": 50.0
+ }
+]

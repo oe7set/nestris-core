@@ -1,0 +1,13 @@
+[package]
+name = "nestris-wasm"
+description = "wasm-bindgen exports of the engine for the browser GUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nestris-engine = { workspace = true }
