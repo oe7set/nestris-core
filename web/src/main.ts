@@ -1,11 +1,16 @@
-// Entry point: capture → engine → views loop, plus the recalibration worker.
+// Entry point: capture -> engine worker -> views.
+//
+// The full CV pipeline (canvas readback, recognition, recording) runs in a
+// Web Worker (`worker/engine.ts`); this thread only captures ImageBitmaps,
+// decodes compact binary snapshots, and paints the UI — so the page stays
+// responsive regardless of frame cost.
 //
 // UI handlers are attached BEFORE the wasm engine loads, so a failed load
 // (missing pkg build, blocked .wasm) surfaces as a visible error instead of
 // dead buttons.
 
 import { CaptureSource } from "./capture";
-import { NestrisEngine } from "./engine";
+import { EngineClient } from "./engineClient";
 import { initSettingsUi, loadConfig } from "./settings";
 import { Views } from "./views";
 
@@ -35,65 +40,42 @@ function downloadRecording(bytes: Uint8Array): void {
 async function boot(): Promise<void> {
   const views = new Views();
   const source = new CaptureSource();
-  let engine: NestrisEngine | null = null;
-  let worker: Worker | null = null;
+  const client = new EngineClient();
+  let engineReady = false;
 
-  // Hidden canvas used to pull RGBA out of the video element.
-  const grab = document.createElement("canvas");
-  const grabCtx = grab.getContext("2d", { willReadFrequently: true })!;
-
-  let lastSolvePost = 0;
   let frameCount = 0;
   let fps = 0;
   let fpsWindowStart = performance.now();
   let running = false;
 
-  const processFrame = (): void => {
-    if (!engine || !source.ready) return;
-    const w = source.video.videoWidth;
-    const h = source.video.videoHeight;
-    if (grab.width !== w || grab.height !== h) {
-      grab.width = w;
-      grab.height = h;
-    }
-    grabCtx.drawImage(source.video, 0, 0, w, h);
-    const imageData = grabCtx.getImageData(0, 0, w, h);
-    const ts = source.video.currentTime || performance.now() / 1000;
-    const frame = engine.process(imageData.data, w, h, ts);
+  client.onResult = (result) => {
+    const { frame } = result.snapshot;
 
-    // Recalibration worker: paced snapshots when the lock asks for them.
-    // The engine shortens the interval while the tracker reports urgency.
-    const now = performance.now();
-    if (
-      worker &&
-      engine.wantsBackgroundSolve() &&
-      now - lastSolvePost >= engine.solveIntervalMs()
-    ) {
-      lastSolvePost = now;
-      const copy = imageData.data.buffer.slice(0);
-      worker.postMessage({ data: copy, width: w, height: h, seed: frame.seq }, [
-        copy,
-      ]);
+    for (const rec of result.recordings) {
+      downloadRecording(rec);
     }
 
-    // Auto-save finished game recordings as .ngf.gz downloads.
-    while (engine.hasFinishedGame()) {
-      downloadRecording(engine.takeFinishedGame());
-    }
-
-    views.drawSource(source.video, engine.lockQuad());
-    views.drawCanonical(engine.canonicalRgba());
+    views.drawSource(source.video, result.snapshot.lockQuad);
+    views.drawCanonical(result.canonical ?? new Uint8Array(0));
     views.drawPlayfield(frame);
     views.updateDashboard(frame);
     views.pushEvents(frame);
 
     frameCount++;
+    const now = performance.now();
     if (now - fpsWindowStart >= 1000) {
       fps = (frameCount * 1000) / (now - fpsWindowStart);
       frameCount = 0;
       fpsWindowStart = now;
     }
-    views.updateLock(engine.lockState(), fps);
+    views.updateLock(result.snapshot.lockState, fps);
+  };
+  client.onError = (message) => showHint(`Engine error: ${message}`, true);
+
+  const processFrame = (): void => {
+    if (!engineReady || !source.ready) return;
+    const ts = source.video.currentTime || performance.now() / 1000;
+    client.sendVideoFrame(source.video, ts);
   };
 
   const loop = (): void => {
@@ -112,11 +94,11 @@ async function boot(): Promise<void> {
     }
   };
   const start = (): void => {
-    if (!engine) {
+    if (!engineReady) {
       showHint("Engine not loaded yet — see the console for the error.", true);
       return;
     }
-    engine.markDiscontinuity();
+    client.markDiscontinuity();
     if (!running) {
       running = true;
       scheduleNext();
@@ -149,7 +131,7 @@ async function boot(): Promise<void> {
     void openSource(() => source.openScreen());
   });
   document.getElementById("btn-reset")!.addEventListener("click", () => {
-    engine?.resetLock();
+    client.resetLock();
   });
   document.body.addEventListener("dragover", (ev) => ev.preventDefault());
   document.body.addEventListener("drop", (ev) => {
@@ -159,22 +141,13 @@ async function boot(): Promise<void> {
   });
 
   initSettingsUi((configJson) => {
-    engine?.setConfig(configJson);
+    client.setConfig(configJson);
   });
 
   // Load the engine last: the UI above stays responsive either way.
   try {
-    const loaded = new NestrisEngine();
-    await loaded.load(JSON.stringify(loadConfig()));
-    engine = loaded;
-    worker = new Worker(new URL("./worker/recalib.ts", import.meta.url), {
-      type: "module",
-    });
-    worker.onmessage = (
-      ev: MessageEvent<{ h: number[]; confidence: number }>,
-    ) => {
-      engine?.offerSolution(ev.data.h, ev.data.confidence);
-    };
+    await client.init(JSON.stringify(loadConfig()));
+    engineReady = true;
     showHint(
       "Engine ready. Open a video file, camera, or screen capture — or drop a video here.",
     );

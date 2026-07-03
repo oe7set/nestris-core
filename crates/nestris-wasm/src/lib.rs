@@ -8,15 +8,21 @@
 
 use wasm_bindgen::prelude::*;
 
+pub mod snapshot;
+
 use std::collections::VecDeque;
 
 use nestris_engine::config::EngineConfig;
 use nestris_engine::frame::Frame;
 use nestris_engine::geometry_cal::calibration::{GeometryResult, estimate_geometry};
 use nestris_engine::layout::get_layout;
+use nestris_engine::output::OutputFrame;
 use nestris_engine::processor::FrameProcessor;
 use nestris_ngf::recorder::{GameRecorder, RecorderConfig, RecorderEvent};
 use nestris_vision::homography::{Mat3, mat3_inv, project};
+
+/// Snapshot lock-state code for replay frames (no live geometry).
+const LOCK_CODE_REPLAY: u8 = 5;
 
 fn parse_config(config_json: &str) -> EngineConfig {
     if config_json.trim().is_empty() {
@@ -38,6 +44,9 @@ pub struct Engine {
     recorder: Option<GameRecorder>,
     /// Finished recordings as gzipped .ngf.gz bytes, awaiting pickup by JS.
     finished_games: VecDeque<Vec<u8>>,
+    /// Persistent buffers read by JS via ptr/len (no per-frame Vec returns).
+    snapshot_buf: Vec<u8>,
+    canon_buf: Vec<u8>,
 }
 
 fn browser_recorder() -> GameRecorder {
@@ -61,6 +70,8 @@ impl Engine {
             seq: 0,
             recorder: Some(browser_recorder()),
             finished_games: VecDeque::new(),
+            snapshot_buf: Vec::new(),
+            canon_buf: Vec::new(),
         }
     }
 
@@ -73,8 +84,7 @@ impl Engine {
         self.rgba.as_mut_ptr()
     }
 
-    /// Process the frame currently in the buffer; returns OutputFrame JSON.
-    pub fn process(&mut self, ts: f64) -> String {
+    fn process_inner(&mut self, ts: f64) -> OutputFrame {
         let mut frame = Frame::from_rgba(&self.rgba, self.width, self.height, self.seq, ts);
         frame.ts = ts;
         self.seq += 1;
@@ -88,7 +98,67 @@ impl Engine {
                 }
             }
         }
-        output.to_json()
+        output
+    }
+
+    /// Process the frame currently in the buffer; returns OutputFrame JSON.
+    /// Kept for compatibility and A/B checks — the app uses
+    /// [`Engine::process_snapshot`].
+    pub fn process(&mut self, ts: f64) -> String {
+        self.process_inner(ts).to_json()
+    }
+
+    /// Process the frame currently in the buffer into the binary snapshot
+    /// buffer (see `snapshot.rs` for the layout); returns its byte length.
+    /// Read via [`Engine::snapshot_ptr`].
+    pub fn process_snapshot(&mut self, ts: f64) -> usize {
+        let output = self.process_inner(ts);
+        let quad = self.lock_quad_array();
+        snapshot::encode_snapshot(
+            &output,
+            snapshot::lock_state_code(self.processor.lock_state()),
+            quad,
+            self.recorder.is_some(),
+            &mut self.snapshot_buf,
+        );
+        self.snapshot_buf.len()
+    }
+
+    pub fn snapshot_ptr(&self) -> *const u8 {
+        self.snapshot_buf.as_ptr()
+    }
+
+    /// Copy the last rectified canonical frame (RGBA 256x240) into the
+    /// persistent canonical buffer; returns its byte length (0 = no lock).
+    /// Read via [`Engine::canonical_ptr`].
+    pub fn canonical_update(&mut self) -> usize {
+        let Some(canon) = self.processor.last_canonical() else {
+            self.canon_buf.clear();
+            return 0;
+        };
+        self.canon_buf.clear();
+        self.canon_buf.reserve(canon.width * canon.height * 4);
+        for px in canon.data.chunks_exact(3) {
+            self.canon_buf.extend_from_slice(&[px[2], px[1], px[0], 255]);
+        }
+        self.canon_buf.len()
+    }
+
+    pub fn canonical_ptr(&self) -> *const u8 {
+        self.canon_buf.as_ptr()
+    }
+
+    fn lock_quad_array(&mut self) -> Option<[f64; 8]> {
+        let rectifier = self.processor.lock().rectifier()?;
+        let inv = mat3_inv(rectifier.matrix())?;
+        let corners = [(0.0, 0.0), (256.0, 0.0), (256.0, 240.0), (0.0, 240.0)];
+        let mut out = [0.0f64; 8];
+        for (i, &(x, y)) in corners.iter().enumerate() {
+            let (sx, sy) = project(&inv, x, y);
+            out[i * 2] = sx;
+            out[i * 2 + 1] = sy;
+        }
+        Some(out)
     }
 
     /// Enable or disable per-game NGF recording (enabled by default).
@@ -214,6 +284,7 @@ impl Engine {
 #[wasm_bindgen]
 pub struct Replay {
     engine: nestris_ngf::replay::ReplayEngine,
+    snapshot_buf: Vec<u8>,
 }
 
 #[wasm_bindgen]
@@ -225,6 +296,7 @@ impl Replay {
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(Replay {
             engine: nestris_ngf::replay::ReplayEngine::new(file),
+            snapshot_buf: Vec::new(),
         })
     }
 
@@ -248,6 +320,19 @@ impl Replay {
     /// The OutputFrame JSON at `index` (clamped), stats included.
     pub fn output_at(&mut self, index: usize) -> String {
         self.engine.output_at(index).to_json()
+    }
+
+    /// Binary snapshot of the frame at `index` (same layout as the live
+    /// engine's snapshots); returns the byte length, read via
+    /// [`Replay::snapshot_ptr`].
+    pub fn snapshot_at(&mut self, index: usize) -> usize {
+        let output = self.engine.output_at(index);
+        snapshot::encode_snapshot(&output, LOCK_CODE_REPLAY, None, false, &mut self.snapshot_buf);
+        self.snapshot_buf.len()
+    }
+
+    pub fn snapshot_ptr(&self) -> *const u8 {
+        self.snapshot_buf.as_ptr()
     }
 }
 
