@@ -6,4 +6,11 @@ export default defineConfig({
   optimizeDeps: { exclude: ["nestris-wasm"] },
   build: { target: "es2022" },
   worker: { format: "es" },
+  server: {
+    fs: {
+      // The wasm pkg lives outside web/ (crates/nestris-wasm/pkg); allow the
+      // dev server to serve from the workspace root, else it 403s the .wasm.
+      allow: [".."],
+    },
+  },
 });

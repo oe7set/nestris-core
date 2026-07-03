@@ -1,4 +1,8 @@
 // Entry point: capture → engine → views loop, plus the recalibration worker.
+//
+// UI handlers are attached BEFORE the wasm engine loads, so a failed load
+// (missing pkg build, blocked .wasm) surfaces as a visible error instead of
+// dead buttons.
 
 import { CaptureSource } from "./capture";
 import { NestrisEngine } from "./engine";
@@ -6,17 +10,18 @@ import { Views } from "./views";
 
 const MIN_SOLVE_INTERVAL_MS = 500;
 
+function showHint(text: string, isError = false): void {
+  const hint = document.getElementById("drop-hint")!;
+  hint.style.display = "block";
+  hint.textContent = text;
+  hint.style.color = isError ? "#f83800" : "";
+}
+
 async function boot(): Promise<void> {
-  const engine = new NestrisEngine();
-  await engine.load();
   const views = new Views();
   const source = new CaptureSource();
-  const worker = new Worker(new URL("./worker/recalib.ts", import.meta.url), {
-    type: "module",
-  });
-  worker.onmessage = (ev: MessageEvent<{ h: number[]; confidence: number }>) => {
-    engine.offerSolution(ev.data.h, ev.data.confidence);
-  };
+  let engine: NestrisEngine | null = null;
+  let worker: Worker | null = null;
 
   // Hidden canvas used to pull RGBA out of the video element.
   const grab = document.createElement("canvas");
@@ -29,7 +34,7 @@ async function boot(): Promise<void> {
   let running = false;
 
   const processFrame = (): void => {
-    if (!source.ready) return;
+    if (!engine || !source.ready) return;
     const w = source.video.videoWidth;
     const h = source.video.videoHeight;
     if (grab.width !== w || grab.height !== h) {
@@ -43,13 +48,16 @@ async function boot(): Promise<void> {
 
     // Recalibration worker: paced snapshots when the lock asks for them.
     const now = performance.now();
-    if (engine.wantsBackgroundSolve() && now - lastSolvePost >= MIN_SOLVE_INTERVAL_MS) {
+    if (
+      worker &&
+      engine.wantsBackgroundSolve() &&
+      now - lastSolvePost >= MIN_SOLVE_INTERVAL_MS
+    ) {
       lastSolvePost = now;
       const copy = imageData.data.buffer.slice(0);
-      worker.postMessage(
-        { data: copy, width: w, height: h, seed: frame.seq },
-        [copy],
-      );
+      worker.postMessage({ data: copy, width: w, height: h, seed: frame.seq }, [
+        copy,
+      ]);
     }
 
     views.drawSource(source.video, engine.lockQuad());
@@ -83,6 +91,10 @@ async function boot(): Promise<void> {
     }
   };
   const start = (): void => {
+    if (!engine) {
+      showHint("Engine not loaded yet — see the console for the error.", true);
+      return;
+    }
     engine.markDiscontinuity();
     if (!running) {
       running = true;
@@ -90,39 +102,64 @@ async function boot(): Promise<void> {
     }
   };
 
+  const openSource = async (open: () => Promise<void>): Promise<void> => {
+    try {
+      await open();
+      start();
+    } catch (err) {
+      showHint(`Could not open source: ${err}`, true);
+    }
+  };
+
   document.getElementById("btn-file")!.addEventListener("click", () => {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "video/*";
-    input.onchange = async () => {
+    input.onchange = () => {
       const file = input.files?.[0];
-      if (file) {
-        await source.openFile(file);
-        start();
-      }
+      if (file) void openSource(() => source.openFile(file));
     };
     input.click();
   });
-  document.getElementById("btn-camera")!.addEventListener("click", async () => {
-    await source.openCamera();
-    start();
+  document.getElementById("btn-camera")!.addEventListener("click", () => {
+    void openSource(() => source.openCamera());
   });
-  document.getElementById("btn-screen")!.addEventListener("click", async () => {
-    await source.openScreen();
-    start();
+  document.getElementById("btn-screen")!.addEventListener("click", () => {
+    void openSource(() => source.openScreen());
   });
   document.getElementById("btn-reset")!.addEventListener("click", () => {
-    engine.resetLock();
+    engine?.resetLock();
   });
   document.body.addEventListener("dragover", (ev) => ev.preventDefault());
-  document.body.addEventListener("drop", async (ev) => {
+  document.body.addEventListener("drop", (ev) => {
     ev.preventDefault();
     const file = ev.dataTransfer?.files?.[0];
-    if (file) {
-      await source.openFile(file);
-      start();
-    }
+    if (file) void openSource(() => source.openFile(file));
   });
+
+  // Load the engine last: the UI above stays responsive either way.
+  try {
+    const loaded = new NestrisEngine();
+    await loaded.load();
+    engine = loaded;
+    worker = new Worker(new URL("./worker/recalib.ts", import.meta.url), {
+      type: "module",
+    });
+    worker.onmessage = (
+      ev: MessageEvent<{ h: number[]; confidence: number }>,
+    ) => {
+      engine?.offerSolution(ev.data.h, ev.data.confidence);
+    };
+    showHint(
+      "Engine ready. Open a video file, camera, or screen capture — or drop a video here.",
+    );
+  } catch (err) {
+    showHint(
+      `Failed to load the wasm engine: ${err}. ` +
+        "Run `wasm-pack build crates/nestris-wasm --target web --release` and reload.",
+      true,
+    );
+  }
 }
 
 void boot();
