@@ -71,14 +71,14 @@ fn pass_h(src: &Image, r: usize, op: Op) -> Image {
     for y in 0..h {
         let row = &src.data[y * w..(y + 1) * w];
         let dst = &mut out.data[y * w..(y + 1) * w];
-        for x in 0..w {
+        for (x, d) in dst.iter_mut().enumerate() {
             let x0 = x.saturating_sub(r);
             let x1 = (x + r + 1).min(w);
             let mut acc = row[x0];
             for &v in &row[x0 + 1..x1] {
                 acc = fold(op, acc, v);
             }
-            dst[x] = acc;
+            *d = acc;
         }
     }
     out
