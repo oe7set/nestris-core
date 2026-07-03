@@ -111,6 +111,7 @@ impl VideoDecoder {
         })
     }
 
+    #[allow(dead_code)] // used by the live-source status path (Phase 6)
     pub fn info(&self) -> &VideoInfo {
         &self.info
     }
