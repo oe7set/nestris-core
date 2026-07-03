@@ -13,10 +13,11 @@ pub enum Region {
 }
 
 /// High-level screen / game state; every frame maps to exactly one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GameState {
     NoSignal,
+    #[default]
     Unknown,
     Title,
     TypeSelect,

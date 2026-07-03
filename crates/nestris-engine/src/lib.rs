@@ -6,10 +6,14 @@
 //! (`wants_background_solve` / `offer_solution`). The JSON output reproduces
 //! the Python implementation's schema v4 field-for-field.
 
+pub mod config;
 pub mod enums;
 pub mod geometry;
 pub mod layout;
 pub mod nes_palette;
+pub mod output;
 pub mod palette;
 pub mod recognition;
+pub mod state;
+pub mod stats;
 pub mod templates;
