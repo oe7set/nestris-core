@@ -9,8 +9,12 @@
 //! This crate is I/O-free and allocation-conscious: it must compile for
 //! `wasm32-unknown-unknown` without features.
 
+pub mod canny;
 pub mod color;
 pub mod components;
+pub mod contour;
+pub mod homography;
+pub mod hough;
 pub mod image;
 pub mod morphology;
 pub mod ncc;
@@ -18,5 +22,7 @@ pub mod resize;
 pub mod rng;
 pub mod stats;
 pub mod threshold;
+pub mod undistort;
+pub mod warp;
 
 pub use image::Image;
