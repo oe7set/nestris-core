@@ -187,20 +187,12 @@ impl Default for TrackingConfig {
 
 /// Output-shaping options. Default off so the serialized `OutputFrame`
 /// stays byte-identical to the verified schema.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OutputConfig {
     /// Attach the `ExtendedStats` block (dashboards, pace, board metrics)
     /// to every output frame.
     pub extended_stats: bool,
-}
-
-impl Default for OutputConfig {
-    fn default() -> Self {
-        Self {
-            extended_stats: false,
-        }
-    }
 }
 
 /// Top-level engine configuration (host I/O settings live with the hosts).

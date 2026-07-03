@@ -17,4 +17,5 @@ std = []
 [dependencies]
 nestris-engine = { workspace = true }
 thiserror = { workspace = true }
+serde_json = { workspace = true }
 flate2 = { version = "1", optional = true }

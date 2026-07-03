@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::io::Write;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 
 use anyhow::{Context, Result};
@@ -28,7 +28,7 @@ pub struct JsonlSink {
 }
 
 impl JsonlSink {
-    pub fn to_file(path: &PathBuf) -> Result<JsonlSink> {
+    pub fn to_file(path: &Path) -> Result<JsonlSink> {
         Ok(JsonlSink {
             writer: Box::new(std::io::BufWriter::new(
                 std::fs::File::create(path).context("create jsonl")?,

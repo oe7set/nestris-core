@@ -20,6 +20,8 @@ pub mod codec;
 #[cfg(feature = "std")]
 pub mod io;
 pub mod recorder;
+pub mod replay;
 
 pub use codec::{NgfError, NgfFrame, decode_frame, encode_v3};
 pub use recorder::{GameRecorder, RecorderConfig, RecorderEvent};
+pub use replay::{ReplayEngine, ReplayFile};

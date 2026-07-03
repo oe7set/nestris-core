@@ -16,7 +16,14 @@ use nestris_host::recalib_thread::RecalibThread;
 use nestris_host::recording::{RecordingSink, default_recording_dir};
 use nestris_host::sinks::{JsonlSink, MultiSink, Sink, WebSocketSink};
 use nestris_ngf::recorder::{GameRecorder, RecorderConfig};
+use nestris_ngf::replay::{ReplayEngine, ReplayFile};
 use nestris_vision::homography::{mat3_inv, project};
+
+/// Whether a source path is an NGF replay rather than a video.
+pub fn is_replay_path(input: &str) -> bool {
+    let lower = input.to_ascii_lowercase();
+    lower.ends_with(".ngf") || lower.ends_with(".ngf.gz") || lower.ends_with(".ngf.part")
+}
 
 /// UI → worker control.
 pub enum Cmd {
@@ -106,6 +113,9 @@ fn run(
     cmd_rx: &Receiver<Cmd>,
     update_tx: &Sender<Box<GuiUpdate>>,
 ) -> anyhow::Result<()> {
+    if is_replay_path(input) {
+        return run_replay(input, sink_opts, start_s, speed, cmd_rx, update_tx);
+    }
     let background = config.calibration.background_recalibration;
     let mut decoder = VideoDecoder::open(input, start_s)?;
     let duration_s = decoder.info().duration_s;
@@ -236,6 +246,103 @@ fn run(
         eprintln!("recording saved: {}", path.display());
     }
     Ok(())
+}
+
+/// Replay pipeline: no ffmpeg, no FrameProcessor — recorded frames are
+/// re-derived through the replay engine and paced by their timestamps.
+/// Seeks are instant (index jumps), so scrubbing works even while paused.
+fn run_replay(
+    input: &str,
+    sink_opts: SinkOptions,
+    start_s: f64,
+    mut speed: f32,
+    cmd_rx: &Receiver<Cmd>,
+    update_tx: &Sender<Box<GuiUpdate>>,
+) -> anyhow::Result<()> {
+    let file = ReplayFile::load(std::path::Path::new(input))?;
+    let duration_s = Some(f64::from(file.duration_ms()) / 1000.0);
+    let mut engine = ReplayEngine::new(file);
+    let last_index = engine.frame_count() - 1;
+
+    let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
+    if let Some(path) = &sink_opts.jsonl_path {
+        sinks.push(Box::new(JsonlSink::to_file(path)?));
+    }
+    if let Some(addr) = &sink_opts.ws_addr {
+        sinks.push(Box::new(WebSocketSink::bind(addr)?));
+    }
+    let mut sink = MultiSink { sinks };
+
+    let mut index = engine.index_at_ms((start_s.max(0.0) * 1000.0) as u32);
+    let mut paused = false;
+    let mut dirty = true; // emit the current frame after start/seek/pause
+    let mut fps_counter = 0u32;
+    let mut fps_value = 0.0f32;
+    let mut fps_window = Instant::now();
+
+    loop {
+        loop {
+            match cmd_rx.try_recv() {
+                Ok(Cmd::Stop) => return Ok(()),
+                Ok(Cmd::Pause(p)) => paused = p,
+                Ok(Cmd::SetSpeed(s)) => speed = s,
+                Ok(Cmd::Seek(pos)) => {
+                    index = engine.index_at_ms((pos.max(0.0) * 1000.0) as u32);
+                    dirty = true;
+                }
+                Ok(Cmd::ResetLock) => {} // no geometry in replay mode
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return Ok(()),
+            }
+        }
+        let at_end = index >= last_index;
+        if (paused || at_end) && !dirty {
+            std::thread::sleep(Duration::from_millis(15));
+            continue;
+        }
+
+        let output = engine.output_at(index);
+        let position_s = f64::from(engine.ctime_ms_at(index)) / 1000.0;
+        sink.publish(&output.to_json());
+
+        fps_counter += 1;
+        if fps_window.elapsed() >= Duration::from_secs(1) {
+            fps_value = fps_counter as f32 / fps_window.elapsed().as_secs_f32();
+            fps_counter = 0;
+            fps_window = Instant::now();
+        }
+
+        let update = GuiUpdate {
+            output,
+            raw_rgba: Vec::new(),
+            raw_w: 0,
+            raw_h: 0,
+            canon_rgba: None,
+            lock_quad: None,
+            lock_state: "REPLAY",
+            position_s,
+            duration_s,
+            fps: fps_value,
+        };
+        if update_tx.send(Box::new(update)).is_err() {
+            return Ok(()); // UI gone
+        }
+        dirty = false;
+
+        if paused || at_end {
+            continue;
+        }
+        // Pace by the recorded frame interval (speed <= 0 = as fast as possible).
+        let dt_ms = engine
+            .ctime_ms_at(index + 1)
+            .saturating_sub(engine.ctime_ms_at(index));
+        if speed > 0.0 && dt_ms > 0 {
+            std::thread::sleep(Duration::from_secs_f64(
+                f64::from(dt_ms) / 1000.0 / f64::from(speed),
+            ));
+        }
+        index += 1;
+    }
 }
 
 fn build_update(

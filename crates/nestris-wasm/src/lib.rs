@@ -198,6 +198,48 @@ impl Engine {
     }
 }
 
+/// A loaded NGF replay: random access to recorded games with statistics
+/// re-derived by the same stats engine the live pipeline uses.
+#[wasm_bindgen]
+pub struct Replay {
+    engine: nestris_ngf::replay::ReplayEngine,
+}
+
+#[wasm_bindgen]
+impl Replay {
+    /// Decode raw or gzipped NGF bytes. Throws on malformed input.
+    #[wasm_bindgen(constructor)]
+    pub fn new(bytes: &[u8]) -> Result<Replay, JsValue> {
+        let file = nestris_ngf::replay::ReplayFile::from_bytes(bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(Replay {
+            engine: nestris_ngf::replay::ReplayEngine::new(file),
+        })
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.engine.frame_count()
+    }
+
+    pub fn duration_ms(&self) -> u32 {
+        self.engine.duration_ms()
+    }
+
+    pub fn ctime_ms_at(&self, index: usize) -> u32 {
+        self.engine.ctime_ms_at(index)
+    }
+
+    /// Frame index at or before a recording timestamp (for seek bars).
+    pub fn index_at_ms(&self, ctime_ms: u32) -> usize {
+        self.engine.index_at_ms(ctime_ms)
+    }
+
+    /// The OutputFrame JSON at `index` (clamped), stats included.
+    pub fn output_at(&mut self, index: usize) -> String {
+        self.engine.output_at(index).to_json()
+    }
+}
+
 /// Standalone geometry solver for the recalibration Web Worker: its own wasm
 /// instance receives downscaled/raw RGBA frames and returns solve JSON.
 #[wasm_bindgen]

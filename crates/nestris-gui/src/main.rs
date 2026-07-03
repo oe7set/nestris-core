@@ -87,6 +87,9 @@ impl App {
         self.error = None;
         self.events.clear();
         self.paused = false;
+        self.latest = None;
+        self.raw_tex = None;
+        self.canon_tex = None;
         self.settings.last_source = self.source.clone();
         self.settings.save();
         self.worker = Some(worker::spawn(
@@ -118,14 +121,20 @@ impl App {
             newest = Some(update);
         }
         if let Some(update) = newest {
-            let raw = egui::ColorImage::from_rgba_unmultiplied(
-                [update.raw_w, update.raw_h],
-                &update.raw_rgba,
-            );
-            match &mut self.raw_tex {
-                Some(tex) => tex.set(raw, egui::TextureOptions::LINEAR),
-                None => {
-                    self.raw_tex = Some(ctx.load_texture("raw", raw, egui::TextureOptions::LINEAR))
+            if update.raw_w == 0 {
+                // Replay mode: no source video to preview.
+                self.raw_tex = None;
+            } else {
+                let raw = egui::ColorImage::from_rgba_unmultiplied(
+                    [update.raw_w, update.raw_h],
+                    &update.raw_rgba,
+                );
+                match &mut self.raw_tex {
+                    Some(tex) => tex.set(raw, egui::TextureOptions::LINEAR),
+                    None => {
+                        self.raw_tex =
+                            Some(ctx.load_texture("raw", raw, egui::TextureOptions::LINEAR))
+                    }
                 }
             }
             if let Some(canon) = &update.canon_rgba {
@@ -202,6 +211,17 @@ impl App {
                 if ui.button("Open video…").clicked()
                     && let Some(path) = rfd::FileDialog::new()
                         .add_filter("Video", &["mp4", "mkv", "avi", "mov", "webm", "ts"])
+                        .pick_file()
+                {
+                    self.source = path.to_string_lossy().into_owned();
+                    self.start(0.0);
+                }
+                if ui
+                    .button("Open replay…")
+                    .on_hover_text("Watch a recorded .ngf / .ngf.gz game")
+                    .clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("NGF replay", &["ngf", "gz", "part"])
                         .pick_file()
                 {
                     self.source = path.to_string_lossy().into_owned();

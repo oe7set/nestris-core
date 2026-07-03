@@ -7,7 +7,7 @@ mod verify;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use nestris_engine::config::EngineConfig;
 use nestris_engine::processor::FrameProcessor;
@@ -74,6 +74,23 @@ enum Cmd {
         /// Also record games already in progress when capture starts.
         #[arg(long)]
         record_partial: bool,
+    },
+    /// Replay a recorded .ngf / .ngf.gz game as schema-v4 output frames.
+    Replay {
+        /// Path to the recording (.ngf, .ngf.gz, or a crash-left .ngf.part).
+        file: PathBuf,
+        /// Output JSONL file path.
+        #[arg(long)]
+        jsonl: Option<PathBuf>,
+        /// WebSocket broadcast address, e.g. `127.0.0.1:8765`.
+        #[arg(long)]
+        ws: Option<String>,
+        /// Playback speed multiplier; 0 = as fast as possible (default).
+        #[arg(long, default_value_t = 0.0)]
+        speed: f64,
+        /// Omit the extended dashboard stats block from output frames.
+        #[arg(long)]
+        no_extended: bool,
     },
     /// Per-frame latency benchmark (p50/p90/p99).
     Bench {
@@ -159,6 +176,13 @@ fn main() -> Result<()> {
             record_raw,
             record_partial,
         }),
+        Cmd::Replay {
+            file,
+            jsonl,
+            ws,
+            speed,
+            no_extended,
+        } => replay(&file, jsonl.as_deref(), ws.as_deref(), speed, !no_extended),
         Cmd::Bench {
             input,
             start,
@@ -261,6 +285,53 @@ fn run(args: RunArgs) -> Result<()> {
     }
     sink.flush();
     eprintln!("{count} frames processed");
+    Ok(())
+}
+
+/// Headless replay: re-emit a recorded game as schema-v4 JSONL/WebSocket
+/// frames, statistics recomputed, paced by the recorded timestamps.
+fn replay(
+    file: &std::path::Path,
+    jsonl: Option<&std::path::Path>,
+    ws: Option<&str>,
+    speed: f64,
+    extended: bool,
+) -> Result<()> {
+    let replay_file = nestris_ngf::replay::ReplayFile::load(file)
+        .with_context(|| format!("load replay {}", file.display()))?;
+    let mut engine = nestris_ngf::replay::ReplayEngine::new(replay_file);
+    engine.extended_stats = extended;
+
+    let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
+    if let Some(path) = jsonl {
+        sinks.push(Box::new(JsonlSink::to_file(path)?));
+    }
+    if let Some(addr) = ws {
+        sinks.push(Box::new(WebSocketSink::bind(addr)?));
+    }
+    if sinks.is_empty() {
+        sinks.push(Box::new(JsonlSink::to_stdout()));
+    }
+    let mut sink = MultiSink { sinks };
+
+    let count = engine.frame_count();
+    for index in 0..count {
+        let output = engine.output_at(index);
+        sink.publish(&output.to_json());
+        if speed > 0.0 && index + 1 < count {
+            let dt_ms = engine
+                .ctime_ms_at(index + 1)
+                .saturating_sub(engine.ctime_ms_at(index));
+            std::thread::sleep(std::time::Duration::from_secs_f64(
+                dt_ms as f64 / 1000.0 / speed,
+            ));
+        }
+    }
+    sink.flush();
+    eprintln!(
+        "{count} frames replayed ({:.1}s of play)",
+        engine.duration_ms() as f64 / 1000.0
+    );
     Ok(())
 }
 
