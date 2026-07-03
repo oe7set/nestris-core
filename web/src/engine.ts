@@ -7,10 +7,16 @@ export class NestrisEngine {
   private engine!: Engine;
   private memory!: WebAssembly.Memory;
 
-  async load(): Promise<void> {
+  async load(configJson = ""): Promise<void> {
     const wasm = await init();
     this.memory = wasm.memory;
-    this.engine = new Engine("");
+    this.engine = new Engine(configJson);
+  }
+
+  /** Rebuild the engine with a new configuration (lock re-acquires). */
+  setConfig(configJson: string): void {
+    this.engine.free();
+    this.engine = new Engine(configJson);
   }
 
   /** Process one RGBA frame; returns the parsed OutputFrame. */

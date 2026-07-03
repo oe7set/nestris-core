@@ -38,6 +38,8 @@ pub struct VideoInfo {
     pub width: usize,
     pub height: usize,
     pub fps: f64,
+    /// Container duration in seconds (files only; `None` for live devices).
+    pub duration_s: Option<f64>,
 }
 
 pub fn probe(input: &str) -> Result<VideoInfo> {
@@ -48,7 +50,7 @@ pub fn probe(input: &str) -> Result<VideoInfo> {
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height,r_frame_rate,avg_frame_rate",
+            "stream=width,height,r_frame_rate,avg_frame_rate:format=duration",
             "-print_format",
             "json",
             input,
@@ -77,7 +79,15 @@ pub fn probe(input: &str) -> Result<VideoInfo> {
         }
         None => rate.parse()?,
     };
-    Ok(VideoInfo { width, height, fps })
+    let duration_s = value["format"]["duration"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok());
+    Ok(VideoInfo {
+        width,
+        height,
+        fps,
+        duration_s,
+    })
 }
 
 /// List DirectShow capture devices (Windows) via ffmpeg.
@@ -127,6 +137,7 @@ impl VideoDecoder {
                 width: 0,
                 height: 0,
                 fps: 60.0,
+                duration_s: None,
             };
         } else {
             info = probe(input)?;
@@ -158,7 +169,6 @@ impl VideoDecoder {
         })
     }
 
-    #[allow(dead_code)] // used by the live-source status path (Phase 6)
     pub fn info(&self) -> &VideoInfo {
         &self.info
     }

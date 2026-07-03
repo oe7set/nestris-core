@@ -6,6 +6,7 @@
 
 import { CaptureSource } from "./capture";
 import { NestrisEngine } from "./engine";
+import { initSettingsUi, loadConfig } from "./settings";
 import { Views } from "./views";
 
 const MIN_SOLVE_INTERVAL_MS = 500;
@@ -137,10 +138,14 @@ async function boot(): Promise<void> {
     if (file) void openSource(() => source.openFile(file));
   });
 
+  initSettingsUi((configJson) => {
+    engine?.setConfig(configJson);
+  });
+
   // Load the engine last: the UI above stays responsive either way.
   try {
     const loaded = new NestrisEngine();
-    await loaded.load();
+    await loaded.load(JSON.stringify(loadConfig()));
     engine = loaded;
     worker = new Worker(new URL("./worker/recalib.ts", import.meta.url), {
       type: "module",

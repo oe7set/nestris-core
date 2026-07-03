@@ -1,19 +1,22 @@
 [package]
-name = "nestris-cli"
-description = "Native frontend: ffmpeg-pipe capture, JSONL/WebSocket sinks, verification commands"
+name = "nestris-gui"
+description = "Native desktop GUI (egui): source picker, live previews, dashboard, events, settings"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "nestris"
+name = "nestris-gui"
 path = "src/main.rs"
 
 [dependencies]
 nestris-engine = { workspace = true }
 nestris-host = { workspace = true }
+nestris-vision = { workspace = true }
 anyhow = { workspace = true }
-serde_json = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
 toml = "0.9"
+eframe = "0.33"
+egui = "0.33"
+rfd = "0.15"

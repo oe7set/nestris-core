@@ -2,9 +2,6 @@
 //! (per-frame latency), `verify` (full-pipeline diff against the Python
 //! oracle's stage dumps — the Phase-5 gate), and `list-devices`.
 
-mod capture_ffmpeg;
-mod recalib_thread;
-mod sinks;
 mod verify;
 
 use std::path::PathBuf;
@@ -13,10 +10,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use nestris_engine::config::EngineConfig;
 use nestris_engine::processor::FrameProcessor;
-
-use crate::capture_ffmpeg::VideoDecoder;
-use crate::recalib_thread::RecalibThread;
-use crate::sinks::{JsonlSink, MultiSink, Sink, WebSocketSink};
+use nestris_host::capture_ffmpeg::{self, VideoDecoder};
+use nestris_host::recalib_thread::RecalibThread;
+use nestris_host::sinks::{JsonlSink, MultiSink, Sink, WebSocketSink};
 
 #[derive(Parser)]
 #[command(name = "nestris", about = "NES-Tetris OCR engine (Rust port)")]

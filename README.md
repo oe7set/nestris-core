@@ -27,7 +27,9 @@ computes community-standard stats, and streams the result as JSON
 |---|---|
 | `nestris-vision` | Pure CV primitives (color, NCC, morphology, components, homography/RANSAC, warp). Zero I/O, zero deps, wasm-clean. |
 | `nestris-engine` | Layout, recognition, state fusion, stats, geometry lock, the per-frame `FrameProcessor`. Sans-io. |
-| `nestris-cli` | Native binary: ffmpeg-pipe capture, JSONL/WebSocket sinks, `run`/`bench`/`verify`/`list-devices`. |
+| `nestris-host` | Shared native glue: ffmpeg-pipe capture, output sinks, recalibration worker thread. |
+| `nestris-cli` | Native binary: `run`/`bench`/`verify`/`list-devices`. |
+| `nestris-gui` | Native desktop GUI (egui): previews, dashboard, transport bar, full settings dialog. |
 | `nestris-wasm` | `wasm-bindgen` exports for the browser GUI in `web/`. |
 | `nestris-android` | UniFFI (Kotlin) bindings. |
 
@@ -42,6 +44,17 @@ cargo run --release -p nestris-cli -- run --input path\to\capture.mp4 --jsonl ou
 
 `nestris run` needs `ffmpeg`/`ffprobe` on `PATH` (Windows:
 `winget install Gyan.FFmpeg`, or set `NESTRIS_FFMPEG`).
+
+## Desktop GUI
+
+```sh
+cargo run --release -p nestris-gui
+```
+
+Open a video file or a DirectShow capture device, watch the live previews
+(raw + lock overlay, canonical, tracked field), scrub/pause/speed files via
+the transport bar, and tune every engine knob in the settings dialog
+(persisted to `%APPDATA%\nestris-core\gui-settings.toml`).
 
 ## Web GUI
 

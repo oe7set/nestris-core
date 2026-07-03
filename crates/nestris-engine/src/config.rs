@@ -1,11 +1,11 @@
 //! Engine configuration mirroring the Python `config.py` structures and
 //! default values exactly (the wire/tuning contract).
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::enums::Region;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CalibrationConfig {
     pub auto: bool,
@@ -40,7 +40,7 @@ impl Default for CalibrationConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FusionConfig {
     pub vote_window: usize,
@@ -62,7 +62,7 @@ impl Default for FusionConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlausibilityConfig {
     pub enabled: bool,
@@ -88,7 +88,7 @@ impl Default for PlausibilityConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecognitionConfig {
     /// `"dec"`, `"hex"`, or `"auto"`.
@@ -116,7 +116,7 @@ impl Default for RecognitionConfig {
 }
 
 /// Top-level engine configuration (host I/O settings live with the hosts).
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EngineConfig {
     pub region: Option<Region>,

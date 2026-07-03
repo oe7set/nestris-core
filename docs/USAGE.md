@@ -103,6 +103,31 @@ freeze_on_clear_animation = true   # hold the grid during line-clear frames
 playfield_stabilizer = true        # per-cell Schmitt hysteresis
 ```
 
+## Desktop GUI (`nestris-gui`)
+
+```sh
+cargo run --release -p nestris-gui
+```
+
+The native desktop app (egui — pure Rust, no Qt SDK required; it fills the
+role of the Python PySide6 GUI) drives the same engine as the CLI:
+
+- **Source picker** — `Open video…` file dialog, or refresh the DirectShow
+  device list with `Devices ⟳` and pick a capture card / webcam.
+- **Previews** — the raw source with the detected-playfield overlay, the
+  rectified 256×240 canonical frame, and the tracked field rendered in the
+  authentic NES level palette with the falling piece on top.
+- **Dashboard + events** — score/lines/level/next, pieces, tetris rate, PPS,
+  burn, drought, clear distribution; the event stream shows line clears
+  (TETRIS in gold), plausibility rejections, and new-game boundaries.
+- **Transport bar** (files) — pause, playback speed (0.25×–4× or Max), and a
+  seek slider (seeking reopens the ffmpeg pipe at the target position; the
+  engine keeps its geometry lock and resets only temporal tracking).
+- **Settings dialog** (⚙) — every `EngineConfig` knob grouped like the TOML
+  reference above, plus output sinks (WebSocket broadcast, JSONL file).
+  `Apply & save` persists to `%APPDATA%\nestris-core\gui-settings.toml` and
+  restarts the pipeline at the current position with the new configuration.
+
 ## Web GUI
 
 ```sh
@@ -122,6 +147,12 @@ show the raw source with the detected-playfield overlay, the rectified
 canonical frame, and the tracked playfield rendered in the authentic NES
 level palette; the side panel has the dashboard tiles and the event stream
 (line clears, plausibility rejections, new-game boundaries).
+
+The **⚙ Settings** button opens the engine-settings dialog: the same
+calibration / fusion / plausibility / recognition knobs as the TOML
+reference, persisted in the browser's `localStorage`. `Apply & save`
+rebuilds the wasm engine with the new configuration (the lock re-acquires
+within a couple of frames).
 
 Implementation notes:
 

@@ -14,7 +14,8 @@ use anyhow::{Context, Result, bail};
 use nestris_engine::processor::FrameProcessor;
 use serde_json::Value;
 
-use crate::capture_ffmpeg::VideoDecoder;
+use nestris_host::capture_ffmpeg::VideoDecoder;
+
 use crate::engine_config;
 
 const TRANSITION_SLACK: i64 = 3;
