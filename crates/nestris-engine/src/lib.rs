@@ -19,4 +19,5 @@ pub mod processor;
 pub mod recognition;
 pub mod state;
 pub mod stats;
+pub mod stats_ext;
 pub mod templates;

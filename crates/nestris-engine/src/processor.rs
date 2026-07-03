@@ -142,6 +142,12 @@ impl FrameProcessor {
         self.live_flash
     }
 
+    /// Extended dashboard statistics for the current game, regardless of the
+    /// `output.extended_stats` wire toggle.
+    pub fn extended_stats(&self) -> crate::stats_ext::ExtendedStats {
+        self.stats.extended()
+    }
+
     /// Re-synchronize temporal state after a discontinuity (keeps the lock).
     pub fn reset_tracking(&mut self) {
         self.fusion.reset_game();
@@ -440,6 +446,12 @@ impl FrameProcessor {
         }
         events.append(&mut self.frame_events);
 
+        let stats_ext = self
+            .config
+            .output
+            .extended_stats
+            .then(|| self.stats.extended());
+
         OutputFrame {
             schema_version: SCHEMA_VERSION,
             seq: frame.seq,
@@ -458,6 +470,7 @@ impl FrameProcessor {
                 statistics: fused.statistics.map(|s| StatisticsMap(s.0)),
             },
             stats,
+            stats_ext,
             confidence: Confidence {
                 score: fused.confidence.score,
                 lines: fused.confidence.lines,

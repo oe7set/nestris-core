@@ -236,6 +236,7 @@ fn replay_readings_reproduces_python_output_exactly() {
                     statistics,
                 },
                 stats: game_stats,
+                stats_ext: None,
                 confidence: Confidence {
                     score: fused.confidence.score,
                     lines: fused.confidence.lines,

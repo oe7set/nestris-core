@@ -3,6 +3,10 @@
 use crate::enums::{GameState, Piece};
 use crate::output::{GameStats, LineClears};
 use crate::state::fusion::FusedState;
+use crate::stats_ext::{ExtTracker, ExtendedStats, PIECE_ORDER};
+
+/// Droughts at or above this length count as "real" droughts (flag/count).
+const DROUGHT_FLAG: u32 = 13;
 
 const GAP_CAP_S: f64 = 0.5;
 const SCORE_SLACK: i64 = 150;
@@ -111,6 +115,9 @@ pub struct StatsEngine {
     score: i64,
     level: Option<i64>,
     pending_events: Vec<StatsEvent>,
+    /// Extended dashboard statistics (piece distribution, points breakdown,
+    /// board metrics, trends). Kept in lockstep with the base observations.
+    ext: ExtTracker,
 }
 
 impl Default for StatsEngine {
@@ -140,6 +147,7 @@ impl StatsEngine {
             score: 0,
             level: None,
             pending_events: Vec::new(),
+            ext: ExtTracker::new(),
         }
     }
 
@@ -175,6 +183,26 @@ impl StatsEngine {
         self.observe_score(state.score);
         self.observe_piece(state.next_piece);
         self.reconcile_statistics(state);
+        self.observe_board(state);
+    }
+
+    /// Feed the settled stack (falling piece masked out) to the extended
+    /// tracker for board-shape metrics and the height timeline.
+    fn observe_board(&mut self, state: &FusedState) {
+        let Some(playfield) = &state.playfield else {
+            return;
+        };
+        let mut grid = playfield.clone();
+        if let Some(cells) = &state.current_piece_cells {
+            for &(r, c) in cells {
+                if let Some(cell) = grid.get_mut(r as usize).and_then(|row| row.get_mut(c as usize))
+                {
+                    *cell = 0;
+                }
+            }
+        }
+        self.ext
+            .on_board(&grid, state.ts, self.drought >= DROUGHT_FLAG);
     }
 
     fn observe_lines(&mut self, state: &FusedState) {
@@ -261,6 +289,8 @@ impl StatsEngine {
             }
             _ => {}
         }
+        self.ext
+            .on_clear(count, self.level, self.total_lines, self.tetris_lines);
         self.pending_events.push(StatsEvent {
             ts,
             field: "lines",
@@ -294,6 +324,7 @@ impl StatsEngine {
         let spawned = prev;
         self.prev_next = Some(next_piece);
         self.pieces += 1;
+        self.ext.on_spawn(spawned, self.drought);
         if spawned == Piece::I {
             self.drought = 0;
         } else {
@@ -328,14 +359,35 @@ impl StatsEngine {
         }
         self.rail_total = Some(total);
 
+        // A confident full rail read: adopt it as the piece distribution.
+        let rail: [i64; 7] = std::array::from_fn(|i| stats.get(PIECE_ORDER[i]).unwrap_or(0));
+        self.ext.on_rail(rail);
+
         if let (Some(i), Some(prev_i)) = (i_count, self.rail_i_count)
             && i > prev_i
         {
+            self.ext.on_rail_i_reset(self.drought);
             self.drought = 0;
         }
         if i_count.is_some() {
             self.rail_i_count = i_count;
         }
+    }
+
+    /// The extended dashboard block for the current game. Bounded clone
+    /// (small structs plus two capped series).
+    pub fn extended(&self) -> ExtendedStats {
+        let mut ext = self.ext.snapshot(
+            self.score,
+            self.prev_lines,
+            self.level,
+            &self.clears,
+            self.total_lines,
+            self.tetris_lines,
+            self.drought,
+        );
+        ext.i_drought.max = self.max_drought;
+        ext
     }
 
     fn snapshot(&self) -> GameStats {

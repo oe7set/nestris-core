@@ -5,6 +5,7 @@
 use serde::Serialize;
 
 use crate::enums::{GameState, Piece, Region};
+use crate::stats_ext::ExtendedStats;
 
 pub const SCHEMA_VERSION: u32 = 4;
 
@@ -100,6 +101,11 @@ pub struct OutputFrame {
     pub game_state: GameState,
     pub fields: Fields,
     pub stats: GameStats,
+    /// Extended dashboard statistics; attached only when
+    /// `output.extended_stats` is enabled so the default serialization stays
+    /// byte-identical to the verified schema-v4 wire format.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stats_ext: Option<ExtendedStats>,
     pub confidence: Confidence,
     pub events: Vec<Event>,
 }
