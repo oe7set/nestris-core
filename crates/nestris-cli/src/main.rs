@@ -2,11 +2,12 @@
 //! (per-frame latency), `verify` (full-pipeline diff against the Python
 //! oracle's stage dumps — the Phase-5 gate), and `list-devices`.
 
+mod config_load;
 mod verify;
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use nestris_engine::config::EngineConfig;
 use nestris_engine::processor::FrameProcessor;
@@ -37,9 +38,18 @@ enum Cmd {
         /// Also write NDJSON to stdout.
         #[arg(long)]
         ndjson: bool,
-        /// Engine config TOML file (defaults mirror the Python AppConfig).
+        /// Engine config file: .toml, .json, .yaml or .yml (defaults mirror
+        /// the Python AppConfig).
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Named tuning preset applied over the config file. Available:
+        /// `handheld` (continuous geometry tracking for shaky phone footage).
+        #[arg(long)]
+        preset: Option<String>,
+        /// Override a single config field, e.g. `--set fusion.vote_window=7`.
+        /// Repeatable; applied after the config file and preset.
+        #[arg(long = "set", value_name = "PATH=VALUE")]
+        set: Vec<String>,
         /// Start position in seconds (files only).
         #[arg(long, default_value_t = 0.0)]
         start: f64,
@@ -89,14 +99,13 @@ pub fn engine_config(oracle_parity: bool) -> EngineConfig {
     cfg
 }
 
-fn load_config(path: Option<&PathBuf>, oracle_parity: bool) -> Result<EngineConfig> {
-    let mut cfg = match path {
-        Some(path) => {
-            let raw = std::fs::read_to_string(path).context("read config")?;
-            toml::from_str(&raw).context("parse config TOML")?
-        }
-        None => EngineConfig::default(),
-    };
+fn load_config(
+    path: Option<&PathBuf>,
+    preset: Option<&str>,
+    overrides: &[String],
+    oracle_parity: bool,
+) -> Result<EngineConfig> {
+    let mut cfg = config_load::load(path.map(|p| p.as_path()), preset, overrides)?;
     if oracle_parity {
         cfg.calibration.background_recalibration = false;
     }
@@ -111,6 +120,8 @@ fn main() -> Result<()> {
             ws,
             ndjson,
             config,
+            preset,
+            set,
             start,
             frames,
             oracle_parity,
@@ -120,6 +131,8 @@ fn main() -> Result<()> {
             ws,
             ndjson,
             config,
+            preset,
+            set,
             start,
             frames,
             oracle_parity,
@@ -149,13 +162,20 @@ struct RunArgs {
     ws: Option<String>,
     ndjson: bool,
     config: Option<PathBuf>,
+    preset: Option<String>,
+    set: Vec<String>,
     start: f64,
     frames: u64,
     oracle_parity: bool,
 }
 
 fn run(args: RunArgs) -> Result<()> {
-    let cfg = load_config(args.config.as_ref(), args.oracle_parity)?;
+    let cfg = load_config(
+        args.config.as_ref(),
+        args.preset.as_deref(),
+        &args.set,
+        args.oracle_parity,
+    )?;
     let background = cfg.calibration.background_recalibration;
     let mut decoder = VideoDecoder::open(&args.input, args.start)?;
     let mut processor = FrameProcessor::new(cfg);

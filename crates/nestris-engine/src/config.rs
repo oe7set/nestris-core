@@ -99,6 +99,27 @@ pub struct RecognitionConfig {
     pub read_current_piece: bool,
     pub freeze_on_clear_animation: bool,
     pub playfield_stabilizer: bool,
+    /// Temporal per-cell color voting over the last few reads instead of
+    /// "hold previous id when ambiguous". Reduces color flicker.
+    pub color_voting: bool,
+    /// Weight of the hue-angle term in accent color assignment, `0.0..=1.0`.
+    /// `0.0` keeps the pure CIELAB nearest-target behavior.
+    pub color_hue_weight: f64,
+    /// Scale the ambiguity threshold by how separable the level's palette
+    /// actually is, flagging ambiguity earlier on close accent pairs.
+    pub adaptive_ambiguity: bool,
+    /// Estimate per-channel gains from white-classified cells and re-assign
+    /// colors once with rebalanced targets.
+    pub white_balance: bool,
+    /// Force all cells of the falling piece to its majority color (a piece
+    /// is a single color by construction).
+    pub piece_color_uniform: bool,
+    /// Predict the post-clear board when a clear animation starts and
+    /// validate the first post-animation reading against it.
+    pub clear_prediction: bool,
+    /// When a predicted clear crosses a level-up boundary, hint the next
+    /// level's palette to the playfield reader until fusion catches up.
+    pub level_hint_on_clear: bool,
 }
 
 impl Default for RecognitionConfig {
@@ -111,6 +132,73 @@ impl Default for RecognitionConfig {
             read_current_piece: true,
             freeze_on_clear_animation: true,
             playfield_stabilizer: true,
+            color_voting: false,
+            color_hue_weight: 0.0,
+            adaptive_ambiguity: false,
+            white_balance: false,
+            piece_color_uniform: false,
+            clear_prediction: false,
+            level_hint_on_clear: false,
+        }
+    }
+}
+
+/// Continuous per-frame geometry micro-tracking for unstable (handheld)
+/// sources. Default off: the oracle-verified pipeline is bit-identical with
+/// tracking disabled, and stable capture-card sources don't need it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TrackingConfig {
+    pub enabled: bool,
+    /// Search window half-size around each HUD label, in canonical pixels.
+    pub search_radius_px: u32,
+    /// Minimum NCC peak score for a label match to count.
+    pub min_label_score: f64,
+    /// Mean correction below this is ignored entirely (zero-cost idle path).
+    pub deadband_px: f64,
+    /// Blend factor toward the fitted correction (`0.0` = ignore, `1.0` = full).
+    pub damping: f64,
+    /// Label offsets larger than this are treated as mismatches, not motion.
+    pub max_correction_px: f64,
+    /// Consecutive tracker misses before escalating to the drift path.
+    pub miss_escalate: u32,
+    /// Sustained motion (EMA of corrections) above this relaxes the
+    /// never-regress adoption margin for background solves.
+    pub motion_adopt_threshold_px: f64,
+    /// Background solve pacing while the tracker reports urgency (seconds).
+    pub drift_solve_interval_s: f64,
+}
+
+impl Default for TrackingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            search_radius_px: 8,
+            min_label_score: 0.4,
+            deadband_px: 0.35,
+            damping: 0.6,
+            max_correction_px: 12.0,
+            miss_escalate: 4,
+            motion_adopt_threshold_px: 1.0,
+            drift_solve_interval_s: 0.15,
+        }
+    }
+}
+
+/// Output-shaping options. Default off so the serialized `OutputFrame`
+/// stays byte-identical to the verified schema.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutputConfig {
+    /// Attach the `ExtendedStats` block (dashboards, pace, board metrics)
+    /// to every output frame.
+    pub extended_stats: bool,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            extended_stats: false,
         }
     }
 }
@@ -124,10 +212,18 @@ pub struct EngineConfig {
     pub fusion: FusionConfig,
     pub plausibility: PlausibilityConfig,
     pub recognition: RecognitionConfig,
+    pub tracking: TrackingConfig,
+    pub output: OutputConfig,
 }
 
 impl EngineConfig {
     pub fn region(&self) -> Region {
         self.region.unwrap_or(Region::Ntsc)
+    }
+
+    /// Preset for handheld/phone footage: continuous geometry tracking on,
+    /// faster background solves. Everything else stays at defaults.
+    pub fn apply_handheld_preset(&mut self) {
+        self.tracking.enabled = true;
     }
 }
