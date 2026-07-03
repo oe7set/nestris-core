@@ -89,7 +89,7 @@ All layers are implemented and verified against the Python implementation:
   including every playfield cell.
 - The state layers (fusion/plausibility/stats) reproduce Python's output
   **byte-exactly** over 18 000 replayed frames (15 fixtures).
-- The full pipeline (own decode, own RANSAC, own warp) scores **100.000%**
-  on all exact-class fields on the reference fixture.
+- The full pipeline (own decode, own RANSAC, own warp) passes the verify
+  policy on **all 15 fixtures**, most exact-class fields at 100.000%.
 - Native hot path: **~3.4 ms p50** per frame (~290 fps) vs ~12.8 ms in
   Python; the wasm build is 508 KB (~220 KB gzipped).

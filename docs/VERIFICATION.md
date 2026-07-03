@@ -95,10 +95,20 @@ nestris verify --fixtures $env:NESTRIS_FIXTURES_DIR            # all fixtures
 nestris verify --fixtures ... --only tetris_01                 # one fixture
 ```
 
-Result on the reference fixture: **100.000% on all 12 exact-class fields
-over 1200 frames.** (The full 15-fixture sweep is CPU-heavy: in
-oracle-parity mode acquisition solves run inline at full resolution on
-every unlocked frame.)
+Result: **all 15 fixtures PASS**, most fields at 100.000% exactly. One
+production detail this gate caught: file decodes must use ffmpeg's
+`-fps_mode passthrough` — the default CFR output *duplicates* frames on
+variable-frame-rate sources (phone captures), silently shifting frame
+indexes against any decode-order consumer (the Python oracle decodes with
+PyAV, which yields each encoded frame exactly once; the port's per-frame
+comparisons drifted by a full second on the VFR fixtures until aligned).
+
+For single-frame cross-language debugging there is a paired instrument:
+`cargo run -p nestris-engine --example solve_debug -- frame.png` prints the
+playfield candidates, constellation scores, and the solve confidence for
+one frame — byte-comparable against the same probe run in the Python repo.
+When extracting probe frames with ffmpeg, remember `-vsync 0`
+(passthrough), or the extracted index will not match the decode order.
 
 ## Regenerating everything
 
