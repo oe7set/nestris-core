@@ -153,6 +153,14 @@ impl VideoDecoder {
             info.width = 1280;
             info.height = 720;
         }
+        if !live {
+            // Emit each decoded frame exactly once. Without this, ffmpeg's
+            // default CFR behavior duplicates frames on variable-frame-rate
+            // sources (phone captures), shifting frame indexes against any
+            // decode-order consumer (PyAV in the Python oracle drifted a
+            // full second on the WIN fixtures).
+            cmd.args(["-fps_mode", "passthrough"]);
+        }
         cmd.args(["-f", "rawvideo", "-pix_fmt", "bgr24", "-"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
