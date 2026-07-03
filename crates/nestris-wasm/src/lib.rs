@@ -137,6 +137,17 @@ impl Engine {
         self.processor.lock().wants_background_solve()
     }
 
+    /// Milliseconds the host should currently wait between background
+    /// solves: drops to the fast drift interval when the geometry tracker
+    /// reports urgency (misses or sustained handheld motion).
+    pub fn solve_interval_ms(&mut self) -> f64 {
+        self.processor
+            .lock()
+            .solve_interval_hint()
+            .map(|s| s * 1000.0)
+            .unwrap_or(500.0)
+    }
+
     /// Adopt a Worker-computed solve: 9 homography values + confidence.
     pub fn offer_solution(&mut self, h: Vec<f64>, confidence: f64) {
         if h.len() != 9 {

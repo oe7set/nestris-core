@@ -46,6 +46,11 @@ export class NestrisEngine {
     return this.engine.wants_background_solve();
   }
 
+  /** Current background-solve pacing (ms); fast while tracking urgency. */
+  solveIntervalMs(): number {
+    return this.engine.solve_interval_ms();
+  }
+
   offerSolution(h: number[], confidence: number): void {
     this.engine.offer_solution(new Float64Array(h), confidence);
   }

@@ -10,15 +10,20 @@
 use std::sync::Arc;
 
 use nestris_vision::Image;
-use nestris_vision::homography::{Mat3, mat3_inv, project};
+use nestris_vision::homography::{Mat3, mat3_inv, mat3_mul, project};
 use nestris_vision::undistort::UndistortMap;
 
-use crate::config::CalibrationConfig;
+use crate::config::{CalibrationConfig, TrackingConfig};
 use crate::geometry_cal::calibration::{GeometryResult, Rectifier, estimate_geometry};
+use crate::geometry_cal::tracker::LocalTracker;
 use crate::layout::{LayoutTable, get_layout};
 
 const REVALIDATE_MIN_DARK: f64 = 0.12;
 const SMALL_CHANGE_SHIFT_PX: f64 = 24.0;
+/// EMA factor for the tracker's sustained-motion estimate.
+const MOTION_EMA_ALPHA: f64 = 0.3;
+/// Blend rate of confidence toward the observed label score under motion.
+const CONFIDENCE_BLEND: f64 = 0.05;
 
 /// Calibration lock lifecycle state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,14 +76,29 @@ pub struct CalibrationLock {
     offered: Option<GeometryResult>,
     /// Whether the current frame is one the host may snapshot for a solve.
     wants_solve: bool,
+    /// Continuous micro-tracker for unstable sources (None = disabled).
+    tracker: Option<LocalTracker>,
+    tracking_cfg: TrackingConfig,
+    /// EMA of the tracker's measured per-frame motion (canonical px).
+    motion_ema: f64,
+    /// Consecutive frames the tracker failed to find enough labels.
+    miss_streak: u32,
 }
 
 impl CalibrationLock {
     pub fn new(cfg: CalibrationConfig) -> Self {
+        Self::new_with_tracking(cfg, TrackingConfig::default())
+    }
+
+    pub fn new_with_tracking(cfg: CalibrationConfig, tracking: TrackingConfig) -> Self {
         let background = cfg.background_recalibration;
+        let layout = get_layout();
+        let tracker = tracking
+            .enabled
+            .then(|| LocalTracker::new(tracking.clone(), layout));
         Self {
             cfg,
-            layout: get_layout(),
+            layout,
             background,
             state: LockState::Unlocked,
             homography: None,
@@ -93,6 +113,10 @@ impl CalibrationLock {
             pending_score: None,
             offered: None,
             wants_solve: false,
+            tracker,
+            tracking_cfg: tracking,
+            motion_ema: 0.0,
+            miss_streak: 0,
         }
     }
 
@@ -148,6 +172,11 @@ impl CalibrationLock {
         self.pending_score = None;
         self.offered = None;
         self.wants_solve = false;
+        self.motion_ema = 0.0;
+        self.miss_streak = 0;
+        if let Some(tracker) = &mut self.tracker {
+            tracker.reset_motion();
+        }
     }
 
     fn try_undistort(&self) -> bool {
@@ -181,12 +210,67 @@ impl CalibrationLock {
         {
             self.state = LockState::Locked;
             self.drift_streak = 0;
+            if !hold_drift && let Some(gray) = canon_gray {
+                self.track_micro_motion(gray, hold_drift);
+            }
         } else {
             let score = self.pending_score.unwrap_or(self.confidence);
             self.on_weak(score, hold_drift);
         }
         self.pending_score = None;
         self.status()
+    }
+
+    /// Run the continuous micro-tracker (when enabled) on the rectified luma
+    /// and fold its correction into the geometry for the next frame.
+    fn track_micro_motion(&mut self, canon_gray: &Image, hold_drift: bool) {
+        let Some(tracker) = &mut self.tracker else {
+            return;
+        };
+        let outcome = tracker.step(canon_gray);
+        if outcome.matched < 2 {
+            // Labels unreadable at their expected spots: either the camera
+            // jumped beyond the search radius or content changed. Escalate
+            // to the drift path (fast background solves) after a few misses.
+            self.miss_streak += 1;
+            if self.miss_streak >= self.tracking_cfg.miss_escalate {
+                self.on_weak(self.confidence, hold_drift);
+            }
+            return;
+        }
+        self.miss_streak = 0;
+        self.motion_ema =
+            MOTION_EMA_ALPHA * outcome.mean_shift + (1.0 - MOTION_EMA_ALPHA) * self.motion_ema;
+
+        if let Some(correction) = outcome.correction
+            && let Some(h) = self.homography
+        {
+            let new_h = mat3_mul(&correction, &h);
+            if let Some(rectifier) = Rectifier::new(new_h, self.undistort.clone()) {
+                self.homography = Some(new_h);
+                self.rectifier = Some(rectifier);
+            }
+        }
+
+        // Under sustained motion the original solve's confidence goes stale;
+        // drift it toward the live label score so `should_adopt` stays honest
+        // and fresher background solves can win.
+        if self.motion_ema > self.tracking_cfg.motion_adopt_threshold_px {
+            self.confidence += (outcome.mean_score - self.confidence) * CONFIDENCE_BLEND;
+        }
+    }
+
+    /// Whether the host should pace background solves at the fast (drift)
+    /// interval: the tracker reports misses or sustained motion, or the lock
+    /// is already drifting. `None` = normal pacing.
+    pub fn solve_interval_hint(&self) -> Option<f64> {
+        if self.tracker.is_none() {
+            return None;
+        }
+        let urgent = self.state == LockState::Drift
+            || self.miss_streak > 0
+            || self.motion_ema > self.tracking_cfg.motion_adopt_threshold_px;
+        urgent.then_some(self.tracking_cfg.drift_solve_interval_s)
     }
 
     fn acquire(&mut self, image: &Image) -> LockStatus {
@@ -263,7 +347,16 @@ impl CalibrationLock {
     }
 
     fn should_adopt(&self, score: f64) -> bool {
-        score >= self.cfg.drift_threshold && score > self.confidence + self.cfg.adopt_margin
+        // Under sustained tracked motion the never-regress margin (designed
+        // for static capture-card sources) yields to fresher solves.
+        let margin = if self.tracker.is_some()
+            && self.motion_ema > self.tracking_cfg.motion_adopt_threshold_px
+        {
+            0.0
+        } else {
+            self.cfg.adopt_margin
+        };
+        score >= self.cfg.drift_threshold && score > self.confidence + margin
     }
 
     fn on_weak(&mut self, score: f64, hold: bool) {
@@ -310,6 +403,10 @@ impl CalibrationLock {
                 for (n, p) in new_h.iter_mut().zip(prev.iter()) {
                     *n = a * *n + (1.0 - a) * p;
                 }
+            } else if let Some(tracker) = &mut self.tracker {
+                // Geometry replaced outright: the tracker's motion history
+                // refers to the old frame of reference.
+                tracker.reset_motion();
             }
         }
         self.homography = Some(new_h);

@@ -102,7 +102,10 @@ impl FrameProcessor {
             fusion: FusionEngine::new(config.fusion.clone()),
             stats: StatsEngine::new(),
             plausibility,
-            lock: CalibrationLock::new(config.calibration.clone()),
+            lock: CalibrationLock::new_with_tracking(
+                config.calibration.clone(),
+                config.tracking.clone(),
+            ),
             last_lock_state: LockState::Unlocked,
             last_level: None,
             last_state: None,

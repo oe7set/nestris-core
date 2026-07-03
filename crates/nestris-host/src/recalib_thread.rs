@@ -75,8 +75,11 @@ impl RecalibThread {
         if !lock.wants_background_solve() {
             return;
         }
+        // The tracker signals urgency (drift, misses, sustained motion) via
+        // a faster pacing hint; stable sources keep the relaxed default.
+        let min_interval = lock.solve_interval_hint().unwrap_or(MIN_SOLVE_INTERVAL_S);
         if let Some(last) = self.last_submit_ts
-            && frame.ts - last < MIN_SOLVE_INTERVAL_S
+            && frame.ts - last < min_interval
         {
             return;
         }

@@ -4,4 +4,5 @@
 pub mod anchors;
 pub mod calibration;
 pub mod lock;
+pub mod tracker;
 pub mod undistort_est;

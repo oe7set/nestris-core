@@ -9,8 +9,6 @@ import { NestrisEngine } from "./engine";
 import { initSettingsUi, loadConfig } from "./settings";
 import { Views } from "./views";
 
-const MIN_SOLVE_INTERVAL_MS = 500;
-
 function showHint(text: string, isError = false): void {
   const hint = document.getElementById("drop-hint")!;
   hint.style.display = "block";
@@ -64,11 +62,12 @@ async function boot(): Promise<void> {
     const frame = engine.process(imageData.data, w, h, ts);
 
     // Recalibration worker: paced snapshots when the lock asks for them.
+    // The engine shortens the interval while the tracker reports urgency.
     const now = performance.now();
     if (
       worker &&
       engine.wantsBackgroundSolve() &&
-      now - lastSolvePost >= MIN_SOLVE_INTERVAL_MS
+      now - lastSolvePost >= engine.solveIntervalMs()
     ) {
       lastSolvePost = now;
       const copy = imageData.data.buffer.slice(0);
