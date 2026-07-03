@@ -264,9 +264,7 @@ impl CalibrationLock {
     /// interval: the tracker reports misses or sustained motion, or the lock
     /// is already drifting. `None` = normal pacing.
     pub fn solve_interval_hint(&self) -> Option<f64> {
-        if self.tracker.is_none() {
-            return None;
-        }
+        self.tracker.as_ref()?;
         let urgent = self.state == LockState::Drift
             || self.miss_streak > 0
             || self.motion_ema > self.tracking_cfg.motion_adopt_threshold_px;

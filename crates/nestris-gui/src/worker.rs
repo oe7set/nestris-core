@@ -11,6 +11,7 @@ use nestris_engine::config::EngineConfig;
 use nestris_engine::frame::Frame;
 use nestris_engine::output::OutputFrame;
 use nestris_engine::processor::FrameProcessor;
+use nestris_engine::stats_ext::ExtendedStats;
 use nestris_host::capture_ffmpeg::VideoDecoder;
 use nestris_host::recalib_thread::RecalibThread;
 use nestris_host::recording::{RecordingSink, default_recording_dir};
@@ -28,15 +29,35 @@ pub fn is_replay_path(input: &str) -> bool {
 /// UI → worker control.
 pub enum Cmd {
     Pause(bool),
+    /// Process exactly one more frame while paused.
+    StepFrame,
     SetSpeed(f32),
     Seek(f64),
     ResetLock,
     Stop,
 }
 
+/// Worker → UI messages (one channel, typed — errors and lifecycle reach
+/// the UI instead of vanishing into stderr).
+pub enum WorkerMsg {
+    /// The source opened successfully.
+    Opened {
+        duration_s: Option<f64>,
+        live: bool,
+    },
+    Update(Box<GuiUpdate>),
+    /// A finished game recording was written.
+    GameSaved(std::path::PathBuf),
+    /// End of stream (file fully played / replay finished).
+    Ended,
+    Error(String),
+}
+
 /// One per-frame snapshot for the UI (latest wins).
 pub struct GuiUpdate {
     pub output: OutputFrame,
+    /// Extended dashboard statistics for the stats window.
+    pub ext: ExtendedStats,
     /// Downscaled raw frame as RGBA + its size.
     pub raw_rgba: Vec<u8>,
     pub raw_w: usize,
@@ -49,6 +70,8 @@ pub struct GuiUpdate {
     pub position_s: f64,
     pub duration_s: Option<f64>,
     pub fps: f32,
+    /// A game recording is currently active.
+    pub recording: bool,
 }
 
 /// Host-side sink options (mirrors the CLI flags).
@@ -75,7 +98,7 @@ impl Default for SinkOptions {
 
 pub struct WorkerHandle {
     pub cmd: Sender<Cmd>,
-    pub updates: Receiver<Box<GuiUpdate>>,
+    pub updates: Receiver<WorkerMsg>,
     pub join: JoinHandle<()>,
 }
 
@@ -90,10 +113,15 @@ pub fn spawn(
     speed: f32,
 ) -> WorkerHandle {
     let (cmd_tx, cmd_rx) = channel::<Cmd>();
-    let (update_tx, update_rx) = channel::<Box<GuiUpdate>>();
+    let (update_tx, update_rx) = channel::<WorkerMsg>();
     let join = std::thread::spawn(move || {
-        if let Err(err) = run(&input, config, sinks, start_s, speed, &cmd_rx, &update_tx) {
-            eprintln!("worker: {err:#}");
+        match run(&input, config, sinks, start_s, speed, &cmd_rx, &update_tx) {
+            Ok(()) => {
+                let _ = update_tx.send(WorkerMsg::Ended);
+            }
+            Err(err) => {
+                let _ = update_tx.send(WorkerMsg::Error(format!("{err:#}")));
+            }
         }
     });
     WorkerHandle {
@@ -111,7 +139,7 @@ fn run(
     mut start_s: f64,
     mut speed: f32,
     cmd_rx: &Receiver<Cmd>,
-    update_tx: &Sender<Box<GuiUpdate>>,
+    update_tx: &Sender<WorkerMsg>,
 ) -> anyhow::Result<()> {
     if is_replay_path(input) {
         return run_replay(input, sink_opts, start_s, speed, cmd_rx, update_tx);
@@ -121,6 +149,7 @@ fn run(
     let duration_s = decoder.info().duration_s;
     let fps = decoder.info().fps.max(1.0);
     let live = input.starts_with("dshow:");
+    let _ = update_tx.send(WorkerMsg::Opened { duration_s, live });
     let mut processor = FrameProcessor::new(config);
     let mut recalib = background.then(RecalibThread::start);
 
@@ -155,6 +184,7 @@ fn run(
 
     'pipeline: loop {
         // Drain control commands.
+        let mut step_one = false;
         loop {
             match cmd_rx.try_recv() {
                 Ok(Cmd::Stop) => break 'pipeline,
@@ -163,6 +193,7 @@ fn run(
                     pace_anchor = Instant::now();
                     pace_frames = 0;
                 }
+                Ok(Cmd::StepFrame) => step_one = true,
                 Ok(Cmd::SetSpeed(s)) => {
                     speed = s;
                     pace_anchor = Instant::now();
@@ -181,6 +212,8 @@ fn run(
                         if let Some((recorder, rec_sink)) = &mut recording {
                             rec_sink.abort(recorder);
                         }
+                        // While paused, show the sought-to frame.
+                        step_one = paused;
                     }
                 }
                 Ok(Cmd::ResetLock) => processor.reset_lock(),
@@ -188,7 +221,7 @@ fn run(
                 Err(TryRecvError::Disconnected) => break 'pipeline,
             }
         }
-        if paused {
+        if paused && !step_one {
             std::thread::sleep(Duration::from_millis(30));
             continue;
         }
@@ -219,11 +252,13 @@ fn run(
             recalib.drive(&mut processor, &frame);
         }
         sink.publish(&output.to_json());
+        let mut recording_active = false;
         if let Some((recorder, rec_sink)) = &mut recording {
             let events = recorder.push(&output);
             for path in rec_sink.handle(recorder, events)? {
-                eprintln!("recording saved: {}", path.display());
+                let _ = update_tx.send(WorkerMsg::GameSaved(path));
             }
+            recording_active = recorder.recording();
         }
 
         fps_counter += 1;
@@ -233,8 +268,15 @@ fn run(
             fps_window = Instant::now();
         }
 
-        let update = build_update(&mut processor, &frame, output, duration_s, fps_value);
-        if update_tx.send(Box::new(update)).is_err() {
+        let update = build_update(
+            &mut processor,
+            &frame,
+            output,
+            duration_s,
+            fps_value,
+            recording_active,
+        );
+        if update_tx.send(WorkerMsg::Update(Box::new(update))).is_err() {
             break 'pipeline; // UI gone
         }
     }
@@ -243,7 +285,7 @@ fn run(
     if let Some((recorder, rec_sink)) = &mut recording
         && let Some(path) = rec_sink.finalize(recorder)?
     {
-        eprintln!("recording saved: {}", path.display());
+        let _ = update_tx.send(WorkerMsg::GameSaved(path));
     }
     Ok(())
 }
@@ -257,10 +299,14 @@ fn run_replay(
     start_s: f64,
     mut speed: f32,
     cmd_rx: &Receiver<Cmd>,
-    update_tx: &Sender<Box<GuiUpdate>>,
+    update_tx: &Sender<WorkerMsg>,
 ) -> anyhow::Result<()> {
     let file = ReplayFile::load(std::path::Path::new(input))?;
     let duration_s = Some(f64::from(file.duration_ms()) / 1000.0);
+    let _ = update_tx.send(WorkerMsg::Opened {
+        duration_s,
+        live: false,
+    });
     let mut engine = ReplayEngine::new(file);
     let last_index = engine.frame_count() - 1;
 
@@ -285,6 +331,10 @@ fn run_replay(
             match cmd_rx.try_recv() {
                 Ok(Cmd::Stop) => return Ok(()),
                 Ok(Cmd::Pause(p)) => paused = p,
+                Ok(Cmd::StepFrame) => {
+                    index = (index + 1).min(last_index);
+                    dirty = true;
+                }
                 Ok(Cmd::SetSpeed(s)) => speed = s,
                 Ok(Cmd::Seek(pos)) => {
                     index = engine.index_at_ms((pos.max(0.0) * 1000.0) as u32);
@@ -312,8 +362,10 @@ fn run_replay(
             fps_window = Instant::now();
         }
 
+        let ext = output.stats_ext.clone().unwrap_or_default();
         let update = GuiUpdate {
             output,
+            ext,
             raw_rgba: Vec::new(),
             raw_w: 0,
             raw_h: 0,
@@ -323,8 +375,9 @@ fn run_replay(
             position_s,
             duration_s,
             fps: fps_value,
+            recording: false,
         };
-        if update_tx.send(Box::new(update)).is_err() {
+        if update_tx.send(WorkerMsg::Update(Box::new(update))).is_err() {
             return Ok(()); // UI gone
         }
         dirty = false;
@@ -351,6 +404,7 @@ fn build_update(
     output: OutputFrame,
     duration_s: Option<f64>,
     fps: f32,
+    recording: bool,
 ) -> GuiUpdate {
     // Downscale the raw frame by integer stride (nearest) to bound texture cost.
     let src = &frame.image;
@@ -383,6 +437,7 @@ fn build_update(
 
     GuiUpdate {
         lock_state: processor.lock_state().name(),
+        ext: processor.extended_stats(),
         output,
         raw_rgba,
         raw_w: rw,
@@ -392,5 +447,6 @@ fn build_update(
         position_s: frame.ts,
         duration_s,
         fps,
+        recording,
     }
 }

@@ -35,6 +35,11 @@ const VELOCITY_EMA: f64 = 0.5;
 /// Canonical content center used to linearize correction bookkeeping.
 const CENTER: (f64, f64) = (128.0, 120.0);
 
+/// One 2-D fit constraint: `(weight, observed (x, y), ideal (x, y))`.
+type PointConstraint = (f64, (f64, f64), (f64, f64));
+/// One horizontal-only fit constraint: `(weight, observed (x, y), ideal x)`.
+type EdgeConstraint = (f64, (f64, f64), f64);
+
 /// One tracker measurement/correction cycle result.
 #[derive(Clone, Debug)]
 pub struct TrackOutcome {
@@ -131,7 +136,7 @@ impl LocalTracker {
         let radius = f64::from(self.cfg.search_radius_px);
 
         // 2-D constraints: observed -> ideal label centers.
-        let mut points: Vec<(f64, (f64, f64), (f64, f64))> = Vec::with_capacity(4);
+        let mut points: Vec<PointConstraint> = Vec::with_capacity(4);
         let mut score_sum = 0.0;
         for site in &self.sites {
             let Some((ox, oy, score)) = self.match_label(canon_gray, site, radius) else {
@@ -182,7 +187,7 @@ impl LocalTracker {
         self.last_offset = Some(offset);
 
         // 1-D horizontal constraints from the playfield's vertical edges.
-        let mut edges: Vec<(f64, (f64, f64), f64)> = Vec::new(); // (w, observed(x,y), ideal_x)
+        let mut edges: Vec<EdgeConstraint> = Vec::new();
         for frac in [0.25, 0.5, 0.75] {
             let y = self.playfield.y + self.playfield.h * frac;
             for (expected_x, from_left) in [(self.playfield.x, true), (self.playfield.x2(), false)]
@@ -314,7 +319,7 @@ fn find_edge(gray: &Image, y: f64, expected_x: f64, from_left: bool) -> Option<f
         let dark_run = (0..3).all(|d| at(x + inward * d).is_some_and(|v| v < DARK));
         let outside_bright = at(x - inward).is_some_and(|v| v >= DARK);
         if dark_run && outside_bright {
-            return Some(f64::from(x) - if from_left { 0.0 } else { 0.0 });
+            return Some(f64::from(x));
         }
     }
     None
@@ -326,10 +331,7 @@ fn find_edge(gray: &Image, y: f64, expected_x: f64, from_left: bool) -> Option<f
 /// `points` are full 2-D constraints `(w, observed, ideal)`; `edges` are
 /// horizontal-only constraints `(w, observed(x, y), ideal_x)`. Returns
 /// `[a, b, tx, a, ty]` (a duplicated for the damping code's convenience).
-fn fit_similarity(
-    points: &[(f64, (f64, f64), (f64, f64))],
-    edges: &[(f64, (f64, f64), f64)],
-) -> Option<[f64; 5]> {
+fn fit_similarity(points: &[PointConstraint], edges: &[EdgeConstraint]) -> Option<[f64; 5]> {
     // Parameters p = [a, b, tx, ty].
     let mut m = [[0.0f64; 4]; 4];
     let mut v = [0.0f64; 4];
@@ -374,8 +376,9 @@ fn solve4(mut m: [[f64; 4]; 4], mut v: [f64; 4]) -> Option<[f64; 4]> {
         v.swap(col, pivot);
         for row in (col + 1)..4 {
             let f = m[row][col] / m[col][col];
-            for k in col..4 {
-                m[row][k] -= f * m[col][k];
+            let (top, bottom) = m.split_at_mut(row);
+            for (b, t) in bottom[0][col..4].iter_mut().zip(top[col][col..4].iter()) {
+                *b -= f * t;
             }
             v[row] -= f * v[col];
         }

@@ -2235,6 +2235,7 @@ name = "nestris-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "eframe",
  "egui",
  "nestris-engine",
@@ -2243,6 +2244,7 @@ dependencies = [
  "nestris-vision",
  "rfd",
  "serde",
+ "serde_json",
  "toml 0.9.12+spec-1.1.0",
 ]
 
