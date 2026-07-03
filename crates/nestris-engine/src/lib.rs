@@ -8,11 +8,14 @@
 
 pub mod config;
 pub mod enums;
+pub mod frame;
 pub mod geometry;
+pub mod geometry_cal;
 pub mod layout;
 pub mod nes_palette;
 pub mod output;
 pub mod palette;
+pub mod processor;
 pub mod recognition;
 pub mod state;
 pub mod stats;
