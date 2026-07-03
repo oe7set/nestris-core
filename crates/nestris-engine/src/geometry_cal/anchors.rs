@@ -327,6 +327,18 @@ pub fn hud_constellation_score(
     layout: &LayoutTable,
 ) -> f64 {
     let labels = detect_label_anchors(image_gray, anchor, layout, 3.0);
+    hud_constellation_score_from(&labels, anchor, layout)
+}
+
+/// [`hud_constellation_score`] over already-detected label anchors, so the
+/// solver can share one `detect_label_anchors` pass between the
+/// correspondence set and the constellation (identical inputs — the
+/// detection is deterministic — so this is a pure cost refactor).
+pub fn hud_constellation_score_from(
+    labels: &[AnchorCorrespondence],
+    anchor: &PlayfieldAnchor,
+    layout: &LayoutTable,
+) -> f64 {
     let sim = approx_similarity(anchor, layout);
     let rects = [
         ("LINES", &layout.label_lines),
@@ -336,7 +348,7 @@ pub fn hud_constellation_score(
     ];
     let mut hits: Vec<f64> = Vec::new();
     let mut offsets: Vec<(f64, f64)> = Vec::new();
-    for c in &labels {
+    for c in labels {
         let name = c.name.split('.').next_back().unwrap_or("");
         let Some((_, rect)) = rects.iter().find(|(n, _)| *n == name) else {
             continue;

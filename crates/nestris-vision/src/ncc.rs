@@ -35,43 +35,75 @@ impl ResponseMap {
 }
 
 /// Zero-mean NCC of `templ` slid over `image` (both single-channel).
+///
+/// Window statistics (Σ I, Σ I²) come from integral images in O(1) per
+/// position, and the cross term is an exact u8×u8 integer dot product, so
+/// the per-position cost is one vectorizable MAC pass over the template —
+/// this is the label-anchor hotspot at high source resolutions. All sums are
+/// integer-exact; only the final normalization is float, matching the naive
+/// formulation to f64 rounding.
 pub fn match_template_ccoeff_normed(image: &Image, templ: &Image) -> ResponseMap {
     assert_eq!(image.channels, 1);
     assert_eq!(templ.channels, 1);
     assert!(templ.width <= image.width && templ.height <= image.height);
     let (tw, th) = (templ.width, templ.height);
+    let (iw, ih) = (image.width, image.height);
     let n = (tw * th) as f64;
 
-    // Zero-mean template and its norm, once.
-    let t_sum: f64 = templ.data.iter().map(|&v| v as f64).sum();
-    let t_mean = t_sum / n;
-    let t_zm: Vec<f64> = templ.data.iter().map(|&v| v as f64 - t_mean).collect();
-    let t_norm2: f64 = t_zm.iter().map(|v| v * v).sum();
+    // Template statistics (integer-exact).
+    let t_sum: u64 = templ.data.iter().map(|&v| v as u64).sum();
+    let t_mean = t_sum as f64 / n;
+    let t_sum2: u64 = templ.data.iter().map(|&v| (v as u64) * (v as u64)).sum();
+    let t_norm2 = t_sum2 as f64 - (t_sum as f64) * t_mean;
 
-    let out_w = image.width - tw + 1;
-    let out_h = image.height - th + 1;
+    // Integral images of I and I² ((iw+1) x (ih+1), zero top/left border).
+    let stride = iw + 1;
+    let mut ii = vec![0u64; stride * (ih + 1)];
+    let mut ii2 = vec![0u64; stride * (ih + 1)];
+    for y in 0..ih {
+        let row = image.row(y);
+        let mut run = 0u64;
+        let mut run2 = 0u64;
+        for x in 0..iw {
+            let v = row[x] as u64;
+            run += v;
+            run2 += v * v;
+            ii[(y + 1) * stride + x + 1] = ii[y * stride + x + 1] + run;
+            ii2[(y + 1) * stride + x + 1] = ii2[y * stride + x + 1] + run2;
+        }
+    }
+    let window_sum = |ox: usize, oy: usize, table: &[u64]| -> u64 {
+        table[(oy + th) * stride + ox + tw] + table[oy * stride + ox]
+            - table[oy * stride + ox + tw]
+            - table[(oy + th) * stride + ox]
+    };
+
+    let out_w = iw - tw + 1;
+    let out_h = ih - th + 1;
     let mut out = vec![0.0f32; out_w * out_h];
     for oy in 0..out_h {
         for ox in 0..out_w {
-            let mut i_sum = 0.0f64;
-            let mut i_sum2 = 0.0f64;
-            let mut cross = 0.0f64;
+            // Cross term: exact integer dot product (row-wise u32, safe for
+            // widths < 66k px at max u8 values).
+            let mut cross: u64 = 0;
             for ty in 0..th {
                 let irow = &image.row(oy + ty)[ox..ox + tw];
-                let trow = &t_zm[ty * tw..(ty + 1) * tw];
-                for (iv, tv) in irow.iter().zip(trow.iter()) {
-                    let v = *iv as f64;
-                    i_sum += v;
-                    i_sum2 += v * v;
-                    cross += v * tv;
+                let trow = &templ.data[ty * tw..(ty + 1) * tw];
+                let mut row_acc: u32 = 0;
+                for (&iv, &tv) in irow.iter().zip(trow.iter()) {
+                    row_acc += iv as u32 * tv as u32;
                 }
+                cross += row_acc as u64;
             }
+            let i_sum = window_sum(ox, oy, &ii) as f64;
+            let i_sum2 = window_sum(ox, oy, &ii2) as f64;
+            let cross_zm = cross as f64 - t_mean * i_sum;
             let i_var = i_sum2 - i_sum * i_sum / n;
             let denom2 = t_norm2 * i_var;
             // Degenerate windows (flat image or flat template): OpenCV's
             // normalization yields 0 there for any practical input.
             let v = if denom2 > f64::EPSILON {
-                cross / denom2.sqrt()
+                cross_zm / denom2.sqrt()
             } else {
                 0.0
             };

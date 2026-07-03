@@ -11,7 +11,7 @@ use nestris_vision::{Image, ncc, resize};
 use crate::geometry::Quad;
 use crate::geometry_cal::anchors::{
     AnchorCorrespondence, detect_label_anchors, detect_playfield_candidates,
-    hud_constellation_score, playfield_correspondences,
+    hud_constellation_score_from, playfield_correspondences,
 };
 use crate::geometry_cal::undistort_est::{apply_undistort, estimate_radial_distortion};
 use crate::layout::{CANON_HEIGHT, CANON_WIDTH, LayoutTable, get_layout};
@@ -208,8 +208,12 @@ pub fn estimate_geometry(
     let mut best_combined = -1.0f64;
     let mut best_conf_only: Option<GeometryResult> = None;
     for anchor in &candidates {
+        // One label-detection pass per candidate, shared by the
+        // correspondence set and the constellation (deterministic, so this
+        // is cost-only — the Python oracle detects twice with equal results).
+        let labels = detect_label_anchors(&work_gray, anchor, layout, 3.0);
         let mut correspondences = playfield_correspondences(anchor, layout);
-        correspondences.extend(detect_label_anchors(&work_gray, anchor, layout, 3.0));
+        correspondences.extend(labels.iter().cloned());
         let (mut h, mut residual, inlier_count) = solve_homography(&correspondences, &mut rng);
         let exact_solve = h.is_none() || inlier_count <= 4;
         if h.is_none() {
@@ -218,7 +222,7 @@ pub fn estimate_geometry(
         }
         let Some(h) = h else { continue };
         let confidence = validate_geometry(work, &h, layout, residual, !exact_solve);
-        let constellation = hud_constellation_score(&work_gray, anchor, layout);
+        let constellation = hud_constellation_score_from(&labels, anchor, layout);
         let result = GeometryResult {
             homography: Some(h),
             confidence,

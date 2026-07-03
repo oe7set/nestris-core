@@ -55,8 +55,81 @@ enum Op {
     Dilate,
 }
 
+#[inline]
+fn fold(op: Op, a: u8, b: u8) -> u8 {
+    match op {
+        Op::Erode => a.min(b),
+        Op::Dilate => a.max(b),
+    }
+}
+
+/// Horizontal running min/max with window radius `r` (window clamped to the
+/// image, which equals OpenCV's constant ±∞ border: outside taps never win).
+fn pass_h(src: &Image, r: usize, op: Op) -> Image {
+    let (w, h) = (src.width, src.height);
+    let mut out = Image::new(w, h, 1);
+    for y in 0..h {
+        let row = &src.data[y * w..(y + 1) * w];
+        let dst = &mut out.data[y * w..(y + 1) * w];
+        for x in 0..w {
+            let x0 = x.saturating_sub(r);
+            let x1 = (x + r + 1).min(w);
+            let mut acc = row[x0];
+            for &v in &row[x0 + 1..x1] {
+                acc = fold(op, acc, v);
+            }
+            dst[x] = acc;
+        }
+    }
+    out
+}
+
+/// Vertical running min/max with window radius `r`.
+fn pass_v(src: &Image, r: usize, op: Op) -> Image {
+    let (w, h) = (src.width, src.height);
+    let mut out = Image::new(w, h, 1);
+    for y in 0..h {
+        let y0 = y.saturating_sub(r);
+        let y1 = (y + r + 1).min(h);
+        let dst = &mut out.data[y * w..(y + 1) * w];
+        dst.copy_from_slice(&src.data[y0 * w..(y0 + 1) * w]);
+        for yy in y0 + 1..y1 {
+            let row = &src.data[yy * w..(yy + 1) * w];
+            for (d, &v) in dst.iter_mut().zip(row.iter()) {
+                *d = fold(op, *d, v);
+            }
+        }
+    }
+    out
+}
+
+/// Elementwise min/max of two equal-size images.
+fn combine(a: &Image, b: &Image, op: Op) -> Image {
+    let mut out = Image::new(a.width, a.height, 1);
+    for ((d, &x), &y) in out.data.iter_mut().zip(a.data.iter()).zip(b.data.iter()) {
+        *d = fold(op, x, y);
+    }
+    out
+}
+
 fn morph_once(src: &Image, kernel: &Kernel, op: Op) -> Image {
     assert_eq!(src.channels, 1);
+    // Separable fast paths for the two kernels the engine uses (byte-exact,
+    // enforced by the morphology golden tests):
+    //   plus (ellipse 3x3)  = union of a 1x3 and a 3x1 window
+    //   ellipse 5x5         = union of a 5x3 box and a 5x1 column
+    // min/max over a union of windows = fold of the per-window results, so
+    // each becomes cache-friendly separable passes instead of a per-pixel
+    // masked kernel scan (the acquisition-path hotspot at full resolution).
+    if kernel.mask == Kernel::ellipse3().mask {
+        return combine(&pass_h(src, 1, op), &pass_v(src, 1, op), op);
+    }
+    if kernel.mask == Kernel::ellipse5().mask {
+        let box5x3 = pass_v(&pass_h(src, 2, op), 1, op);
+        return combine(&box5x3, &pass_v(src, 2, op), op);
+    }
+
+    // Generic reference path for arbitrary kernels.
     let (w, h) = (src.width as isize, src.height as isize);
     let ax = (kernel.width / 2) as isize;
     let ay = (kernel.height / 2) as isize;
