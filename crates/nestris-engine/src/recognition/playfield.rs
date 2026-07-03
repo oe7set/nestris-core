@@ -26,6 +26,38 @@ const EXPOSURE_MAX: f32 = 1.10;
 const AMBIGUITY_RATIO: f32 = 0.75;
 const NEUTRAL_CHROMA: f32 = 30.0;
 const GRAY_WHITE_SPLIT: f32 = 0.8;
+/// Scale of the hue-angle cost term: a π hue difference costs this many
+/// Lab-distance units (comparable magnitude to `dist3` on accents).
+const HUE_SCALE: f32 = 120.0;
+/// Target-pair separation that keeps the full ambiguity ratio (adaptive
+/// ambiguity tightens the ratio for palettes with closer accents).
+const AMBIGUITY_REF_DIST: f32 = 60.0;
+/// Minimum white-classified cells before white-balance gains are trusted.
+const WB_MIN_WHITE_CELLS: usize = 3;
+const WB_GAIN_MIN: f32 = 0.7;
+const WB_GAIN_MAX: f32 = 1.3;
+
+/// Optional color-discrimination refinements (all default-off: the plain
+/// path stays bit-identical to the verified oracle port).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ColorTuning {
+    /// Weight of the hue-angle term in accent assignment, `0.0..=1.0`.
+    pub hue_weight: f32,
+    /// Tighten the ambiguity threshold when the level's targets are close.
+    pub adaptive_ambiguity: bool,
+    /// Estimate per-channel gains from white cells and re-assign once.
+    pub white_balance: bool,
+}
+
+impl ColorTuning {
+    pub fn from_config(cfg: &crate::config::RecognitionConfig) -> Self {
+        Self {
+            hue_weight: cfg.color_hue_weight.clamp(0.0, 1.0) as f32,
+            adaptive_ambiguity: cfg.adaptive_ambiguity,
+            white_balance: cfg.white_balance,
+        }
+    }
+}
 
 pub type Grid<T> = [[T; PLAYFIELD_COLS]; PLAYFIELD_ROWS];
 
@@ -183,12 +215,24 @@ fn cluster_accents(feats: &[Lab]) -> Option<(Lab, Lab)> {
 pub struct PlayfieldReader;
 
 impl PlayfieldReader {
-    /// Read the playfield. `gray` is the shared whole-frame luma.
+    /// Read the playfield with default (oracle-exact) color handling.
     pub fn read(
         canon: &Image,
         gray: &Image,
         layout: &LayoutTable,
         level: Option<i64>,
+    ) -> PlayfieldReading {
+        Self::read_with(canon, gray, layout, level, ColorTuning::default())
+    }
+
+    /// Read the playfield. `gray` is the shared whole-frame luma; `tuning`
+    /// selects the optional color-discrimination refinements.
+    pub fn read_with(
+        canon: &Image,
+        gray: &Image,
+        layout: &LayoutTable,
+        level: Option<i64>,
+        tuning: ColorTuning,
     ) -> PlayfieldReading {
         let pf = &layout.playfield;
         let (px0, py0, px1, py1) = pf.to_bounds();
@@ -335,6 +379,7 @@ impl PlayfieldReader {
                 &filled_feats,
                 level,
                 &mut ambiguous,
+                tuning,
             );
         }
         let confidence = if conf_count > 0 {
@@ -353,30 +398,131 @@ impl PlayfieldReader {
     }
 }
 
-/// Assign color ids to filled cells (port of `_assign_colors`).
+/// Hue angle of a Lab point around the neutral axis.
+fn hue_angle(f: Lab) -> f32 {
+    (f.2 - 128.0).atan2(f.1 - 128.0)
+}
+
+fn chroma_of(f: Lab) -> f32 {
+    (f.1 - 128.0).hypot(f.2 - 128.0)
+}
+
+/// Assignment cost of feature `f` against target `t`: pure Lab distance, or
+/// a hue-blended cost when both are chromatic (hue is far more exposure-
+/// invariant than Lab distance for saturated accents).
+fn assign_cost(f: Lab, t: Lab, hue_weight: f32) -> f32 {
+    let d = dist3(f, t);
+    if hue_weight <= 0.0 || chroma_of(t) < NEUTRAL_CHROMA || chroma_of(f) < NEUTRAL_CHROMA {
+        return d;
+    }
+    let mut dh = (hue_angle(f) - hue_angle(t)).abs();
+    if dh > std::f32::consts::PI {
+        dh = 2.0 * std::f32::consts::PI - dh;
+    }
+    let hue_term = dh / std::f32::consts::PI * HUE_SCALE;
+    (1.0 - hue_weight) * d + hue_weight * hue_term
+}
+
+/// One pass of nearest-target assignment; returns (ids, ambiguity flags).
+fn assign_pass(
+    feats: &[Lab],
+    targets: &[Lab; 3],
+    tuning: ColorTuning,
+) -> (Vec<u8>, Vec<bool>) {
+    let mut ids: Vec<u8> = Vec::with_capacity(feats.len());
+    let mut amb: Vec<bool> = Vec::with_capacity(feats.len());
+    for &f in feats {
+        let d = [
+            assign_cost(f, targets[0], tuning.hue_weight),
+            assign_cost(f, targets[1], tuning.hue_weight),
+            assign_cost(f, targets[2], tuning.hue_weight),
+        ];
+        // np.argsort ascending, stable: ties keep lower index (white first).
+        let mut order = [0usize, 1, 2];
+        order.sort_by(|&a, &b| d[a].partial_cmp(&d[b]).unwrap());
+        ids.push(order[0] as u8 + 1);
+        // Adaptive ambiguity: palettes whose two best targets sit close in
+        // Lab flag ambiguity earlier (the voter resolves those cells).
+        let ratio = if tuning.adaptive_ambiguity {
+            let sep = dist3(targets[order[0]], targets[order[1]]);
+            AMBIGUITY_RATIO * (sep / AMBIGUITY_REF_DIST).clamp(0.6, 1.0)
+        } else {
+            AMBIGUITY_RATIO
+        };
+        amb.push(d[order[0]] > ratio * d[order[1]]);
+    }
+    (ids, amb)
+}
+
+/// Per-channel white-balance gains estimated from white-classified cells:
+/// `observed white BGR / (reference white * exposure)`, clamped.
+fn white_balance_gains(feats: &[Lab], ids: &[u8], exposure: f32) -> Option<(f32, f32, f32)> {
+    let whites: Vec<Lab> = feats
+        .iter()
+        .zip(ids.iter())
+        .filter(|&(_, &id)| id == WHITE_ID)
+        .map(|(&f, _)| f)
+        .collect();
+    if whites.len() < WB_MIN_WHITE_CELLS {
+        return None;
+    }
+    let mut sum = (0.0f32, 0.0f32, 0.0f32);
+    for &(l, a, b) in &whites {
+        let (bb, gg, rr) = color::lab_pixel_to_bgr(
+            l.clamp(0.0, 255.0) as u8,
+            a.clamp(0.0, 255.0) as u8,
+            b.clamp(0.0, 255.0) as u8,
+        );
+        sum = (sum.0 + bb as f32, sum.1 + gg as f32, sum.2 + rr as f32);
+    }
+    let n = whites.len() as f32;
+    let reference = EXPOSURE_REF * exposure;
+    let gain = |channel_mean: f32| (channel_mean / reference).clamp(WB_GAIN_MIN, WB_GAIN_MAX);
+    Some((gain(sum.0 / n), gain(sum.1 / n), gain(sum.2 / n)))
+}
+
+/// Scale raw Lab targets by exposure and per-channel gains in BGR space.
+fn scale_targets_per_channel(
+    raw_targets: &[Lab; 3],
+    exposure: f32,
+    gains: (f32, f32, f32),
+) -> [Lab; 3] {
+    raw_targets.map(|(l, a, b)| {
+        let (bb, gg, rr) = color::lab_pixel_to_bgr(
+            l.clamp(0.0, 255.0) as u8,
+            a.clamp(0.0, 255.0) as u8,
+            b.clamp(0.0, 255.0) as u8,
+        );
+        let scale = |v: u8, g: f32| ((v as f32 * exposure * g).clamp(0.0, 255.0)) as u8;
+        let (l2, a2, b2) = color::bgr_pixel_to_lab(
+            scale(bb, gains.0),
+            scale(gg, gains.1),
+            scale(rr, gains.2),
+        );
+        (l2 as f32, a2 as f32, b2 as f32)
+    })
+}
+
+/// Assign color ids to filled cells (port of `_assign_colors`, plus the
+/// optional [`ColorTuning`] refinements).
 fn assign_colors(
     grid: &mut Grid<u8>,
     cells: &[(usize, usize)],
     feats: &[(f32, f32, f32)],
     level: Option<i64>,
     ambiguous: &mut Grid<bool>,
+    tuning: ColorTuning,
 ) {
     if let Some(level) = level {
         let raw_targets = level_targets(level);
-        let targets = scale_targets(&raw_targets, estimate_exposure(feats));
-        let mut ids: Vec<u8> = Vec::with_capacity(feats.len());
-        let mut amb: Vec<bool> = Vec::with_capacity(feats.len());
-        for &f in feats {
-            let d = [
-                dist3(f, targets[0]),
-                dist3(f, targets[1]),
-                dist3(f, targets[2]),
-            ];
-            // np.argsort ascending, stable: ties keep lower index (white first).
-            let mut order = [0usize, 1, 2];
-            order.sort_by(|&a, &b| d[a].partial_cmp(&d[b]).unwrap());
-            ids.push(order[0] as u8 + 1);
-            amb.push(d[order[0]] > AMBIGUITY_RATIO * d[order[1]]);
+        let exposure = estimate_exposure(feats);
+        let targets = scale_targets(&raw_targets, exposure);
+        let (mut ids, mut amb) = assign_pass(feats, &targets, tuning);
+        if tuning.white_balance
+            && let Some(gains) = white_balance_gains(feats, &ids, exposure)
+        {
+            let rebalanced = scale_targets_per_channel(&raw_targets, exposure, gains);
+            (ids, amb) = assign_pass(feats, &rebalanced, tuning);
         }
         split_neutral_gray(feats, &mut ids, &raw_targets);
         for (i, &(row, col)) in cells.iter().enumerate() {
@@ -413,6 +559,84 @@ fn assign_colors(
         grid[row][col] = if da <= db { ACCENT_A_ID } else { ACCENT_B_ID };
         let (lo, hi) = if da <= db { (da, db) } else { (db, da) };
         ambiguous[row][col] = lo > AMBIGUITY_RATIO * hi;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_tuning_matches_plain_distance() {
+        let targets: [Lab; 3] = [(240.0, 128.0, 128.0), (150.0, 190.0, 128.0), (150.0, 128.0, 190.0)];
+        let feats = vec![(150.0, 185.0, 130.0), (238.0, 129.0, 127.0)];
+        let (ids, amb) = assign_pass(&feats, &targets, ColorTuning::default());
+        assert_eq!(ids, vec![ACCENT_A_ID, WHITE_ID]);
+        assert_eq!(amb, vec![false, false]);
+    }
+
+    #[test]
+    fn hue_weight_rescues_dim_but_hue_true_accent() {
+        // Feature: accent A's hue (pure +a), strongly dimmed. A decoy
+        // target B sits closer in plain Lab distance but 90° away in hue.
+        let t_white: Lab = (250.0, 128.0, 128.0);
+        let t_a: Lab = (200.0, 190.0, 128.0); // hue 0°
+        let t_b: Lab = (140.0, 128.0, 150.0); // hue 90°, dim
+        let feat: Lab = (130.0, 170.0, 128.0); // hue 0°, dim
+        let targets = [t_white, t_a, t_b];
+
+        let (plain_ids, _) = assign_pass(&[feat], &targets, ColorTuning::default());
+        assert_eq!(plain_ids[0], ACCENT_B_ID, "plain distance picks the decoy");
+
+        let tuned = ColorTuning {
+            hue_weight: 0.7,
+            ..ColorTuning::default()
+        };
+        let (hue_ids, _) = assign_pass(&[feat], &targets, tuned);
+        assert_eq!(hue_ids[0], ACCENT_A_ID, "hue term recovers the true accent");
+    }
+
+    #[test]
+    fn adaptive_ambiguity_flags_close_palettes_earlier() {
+        // Accents 56.6 Lab units apart tighten the ratio from 0.75 to
+        // ~0.707; the feature's best/second distance ratio (~0.73) falls
+        // exactly between the two thresholds.
+        let targets: [Lab; 3] = [
+            (250.0, 128.0, 128.0),
+            (150.0, 168.0, 128.0),
+            (150.0, 128.0, 168.0),
+        ];
+        let feat: Lab = (150.0, 150.6, 144.4);
+        let (_, plain) = assign_pass(&[feat], &targets, ColorTuning::default());
+        let (_, adaptive) = assign_pass(
+            &[feat],
+            &targets,
+            ColorTuning {
+                adaptive_ambiguity: true,
+                ..ColorTuning::default()
+            },
+        );
+        assert!(!plain[0], "plain ratio does not flag this cell");
+        assert!(adaptive[0], "tightened ratio flags it for the voter");
+    }
+
+    #[test]
+    fn white_balance_gains_reflect_color_cast() {
+        // White cells captured with a red-heavy cast at exposure 1.0.
+        let cast = palette::bgr_to_lab((200, 205, 248));
+        let feats = vec![cast; 4];
+        let ids = vec![WHITE_ID; 4];
+        let (gb, gg, gr) = white_balance_gains(&feats, &ids, 1.0).expect("enough whites");
+        assert!(gr > gb, "red gain {gr} should exceed blue gain {gb}");
+        assert!(gr > gg);
+        assert!((WB_GAIN_MIN..=WB_GAIN_MAX).contains(&gb));
+    }
+
+    #[test]
+    fn white_balance_needs_enough_whites() {
+        let feats = vec![WHITE_LAB; 2];
+        let ids = vec![WHITE_ID; 2];
+        assert!(white_balance_gains(&feats, &ids, 1.0).is_none());
     }
 }
 

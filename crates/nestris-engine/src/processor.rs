@@ -16,7 +16,7 @@ use crate::recognition::clear_anim::ClearAnimationDetector;
 use crate::recognition::current_piece::CurrentPieceReader;
 use crate::recognition::digits::{BaseMode, DigitReader, ScoreBaseLatch};
 use crate::recognition::next_piece::NextPieceReader;
-use crate::recognition::playfield::{Grid, PlayfieldReader};
+use crate::recognition::playfield::{ColorTuning, Grid, PlayfieldReader};
 use crate::recognition::stabilizer::PlayfieldStabilizer;
 use crate::recognition::statistics::StatisticsReader;
 use crate::state::fusion::{FusedState, FusionEngine, RawReading};
@@ -98,7 +98,7 @@ impl FrameProcessor {
             statistics: StatisticsReader::new(),
             current: CurrentPieceReader::new(),
             clear_anim: ClearAnimationDetector::new(),
-            stabilizer: PlayfieldStabilizer::new(),
+            stabilizer: PlayfieldStabilizer::new_with_voting(config.recognition.color_voting),
             fusion: FusionEngine::new(config.fusion.clone()),
             stats: StatsEngine::new(),
             plausibility,
@@ -353,7 +353,13 @@ impl FrameProcessor {
             Some(BaseMode::Dec),
         );
         let next_piece = NextPieceReader::read(canon, &layout.next_box);
-        let mut playfield = PlayfieldReader::read(canon, gray, layout, self.last_level);
+        let mut playfield = PlayfieldReader::read_with(
+            canon,
+            gray,
+            layout,
+            self.last_level,
+            ColorTuning::from_config(&self.config.recognition),
+        );
         if self.config.recognition.playfield_stabilizer {
             playfield = self.stabilizer.update(&playfield);
         }
@@ -398,6 +404,12 @@ impl FrameProcessor {
                 reading.current_piece_pos = Some((row as u32, col as u32));
             }
             if !cp.cells.is_empty() {
+                // A falling piece is a single color by construction: force
+                // its cells to their majority id (fixes single-cell color
+                // misreads on levels with close accents).
+                if self.config.recognition.piece_color_uniform && cp.cells.len() >= 3 {
+                    uniform_piece_color(reading.playfield.as_mut(), &cp.cells);
+                }
                 reading.current_piece_cells = Some(
                     cp.cells
                         .iter()
@@ -486,6 +498,39 @@ impl FrameProcessor {
                 overall: fused.confidence.overall,
             },
             events,
+        }
+    }
+}
+
+/// Force the falling piece's cells to their majority color id in the raw
+/// reading (a tetromino is one color by construction; single-cell misreads
+/// on close-accent levels get corrected before fusion sees them).
+fn uniform_piece_color(playfield: Option<&mut Vec<Vec<u8>>>, cells: &[(usize, usize)]) {
+    let Some(grid) = playfield else { return };
+    let mut counts = [0usize; 4];
+    for &(r, c) in cells {
+        if let Some(&id) = grid.get(r).and_then(|row| row.get(c))
+            && id > 0
+        {
+            counts[id as usize] += 1;
+        }
+    }
+    let (majority, votes) = counts
+        .iter()
+        .enumerate()
+        .skip(1)
+        .max_by_key(|&(_, &n)| n)
+        .map(|(id, &n)| (id as u8, n))
+        .unwrap_or((0, 0));
+    // Require a real majority (not a 2/2 split of a 4-cell piece).
+    if votes * 2 <= cells.len() {
+        return;
+    }
+    for &(r, c) in cells {
+        if let Some(cell) = grid.get_mut(r).and_then(|row| row.get_mut(c))
+            && *cell > 0
+        {
+            *cell = majority;
         }
     }
 }
