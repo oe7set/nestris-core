@@ -8,3 +8,15 @@
 //!
 //! This crate is I/O-free and allocation-conscious: it must compile for
 //! `wasm32-unknown-unknown` without features.
+
+pub mod color;
+pub mod components;
+pub mod image;
+pub mod morphology;
+pub mod ncc;
+pub mod resize;
+pub mod rng;
+pub mod stats;
+pub mod threshold;
+
+pub use image::Image;
