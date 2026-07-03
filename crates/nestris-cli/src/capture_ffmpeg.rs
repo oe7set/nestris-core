@@ -80,24 +80,69 @@ pub fn probe(input: &str) -> Result<VideoInfo> {
     Ok(VideoInfo { width, height, fps })
 }
 
+/// List DirectShow capture devices (Windows) via ffmpeg.
+pub fn list_devices() -> Result<String> {
+    let output = Command::new(tool_path("ffmpeg"))
+        .args([
+            "-hide_banner",
+            "-list_devices",
+            "true",
+            "-f",
+            "dshow",
+            "-i",
+            "dummy",
+        ])
+        .output()
+        .context("spawn ffmpeg (install ffmpeg or set NESTRIS_FFMPEG)")?;
+    // ffmpeg prints the device list on stderr and exits non-zero by design.
+    Ok(String::from_utf8_lossy(&output.stderr).into_owned())
+}
+
 /// Streaming decoder: raw BGR24 frames read from an ffmpeg pipe.
+/// `dshow:<device name>` opens a live DirectShow device; anything else is a
+/// file/URL ffmpeg can read.
 pub struct VideoDecoder {
     child: Child,
     info: VideoInfo,
     frame_bytes: usize,
     next_seq: i64,
+    /// Live sources have no reliable per-frame pts on the raw pipe; stamp
+    /// with the wall clock instead of seq/fps.
+    live: bool,
+    started: std::time::Instant,
 }
 
 impl VideoDecoder {
     /// Open `input` (file path or `dshow:...` device) at `start` seconds.
     pub fn open(input: &str, start: f64) -> Result<VideoDecoder> {
-        let info = probe(input)?;
+        let live = input.starts_with("dshow:");
         let mut cmd = Command::new(tool_path("ffmpeg"));
         cmd.arg("-v").arg("error");
-        if start > 0.0 {
-            cmd.arg("-ss").arg(format!("{start}"));
+        let info;
+        if live {
+            let device = input.trim_start_matches("dshow:");
+            cmd.args(["-f", "dshow", "-i", &format!("video={device}")]);
+            // dshow cannot be ffprobe'd before opening; scale to a known size.
+            info = VideoInfo {
+                width: 0,
+                height: 0,
+                fps: 60.0,
+            };
+        } else {
+            info = probe(input)?;
+            if start > 0.0 {
+                cmd.arg("-ss").arg(format!("{start}"));
+            }
+            cmd.args(["-i", input]);
         }
-        cmd.args(["-i", input, "-f", "rawvideo", "-pix_fmt", "bgr24", "-"])
+        let mut info = info;
+        if live {
+            // Normalize live input to 1280x720 so the frame size is known.
+            cmd.args(["-vf", "scale=1280:720"]);
+            info.width = 1280;
+            info.height = 720;
+        }
+        cmd.args(["-f", "rawvideo", "-pix_fmt", "bgr24", "-"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .stdin(Stdio::null());
@@ -108,6 +153,8 @@ impl VideoDecoder {
             info,
             frame_bytes,
             next_seq: 0,
+            live,
+            started: std::time::Instant::now(),
         })
     }
 
@@ -132,7 +179,12 @@ impl VideoDecoder {
         let image = Image::from_vec(buf, self.info.width, self.info.height, 3);
         let seq = self.next_seq;
         self.next_seq += 1;
-        Ok(Some(Frame::new(image, seq, seq as f64 / self.info.fps)))
+        let ts = if self.live {
+            self.started.elapsed().as_secs_f64()
+        } else {
+            seq as f64 / self.info.fps
+        };
+        Ok(Some(Frame::new(image, seq, ts)))
     }
 }
 

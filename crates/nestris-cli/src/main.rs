@@ -1,20 +1,22 @@
-//! Native CLI frontend: `run` (process a source to JSONL), `bench`
-//! (per-frame latency), and `verify` (full-pipeline diff against the Python
-//! oracle's stage dumps — the Phase-5 gate).
+//! Native CLI frontend: `run` (process a source to JSONL/WebSocket), `bench`
+//! (per-frame latency), `verify` (full-pipeline diff against the Python
+//! oracle's stage dumps — the Phase-5 gate), and `list-devices`.
 
 mod capture_ffmpeg;
+mod recalib_thread;
+mod sinks;
 mod verify;
 
-use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use nestris_engine::config::EngineConfig;
-use nestris_engine::frame::Frame;
 use nestris_engine::processor::FrameProcessor;
 
 use crate::capture_ffmpeg::VideoDecoder;
+use crate::recalib_thread::RecalibThread;
+use crate::sinks::{JsonlSink, MultiSink, Sink, WebSocketSink};
 
 #[derive(Parser)]
 #[command(name = "nestris", about = "NES-Tetris OCR engine (Rust port)")]
@@ -25,22 +27,31 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Process a video source and write per-frame JSONL.
+    /// Process a video source and stream per-frame JSON to the sinks.
     Run {
-        /// Input: video file path (or any ffmpeg-supported source).
+        /// Input: video file path, or `dshow:<device name>` for live capture.
         #[arg(long)]
         input: String,
-        /// Output JSONL path (stdout when omitted).
+        /// Output JSONL file path.
         #[arg(long)]
         jsonl: Option<PathBuf>,
-        /// Start position in seconds.
+        /// WebSocket broadcast address, e.g. `127.0.0.1:8765`.
+        #[arg(long)]
+        ws: Option<String>,
+        /// Also write NDJSON to stdout.
+        #[arg(long)]
+        ndjson: bool,
+        /// Engine config TOML file (defaults mirror the Python AppConfig).
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Start position in seconds (files only).
         #[arg(long, default_value_t = 0.0)]
         start: f64,
         /// Maximum frames to process (0 = all).
         #[arg(long, default_value_t = 0)]
         frames: u64,
         /// Deterministic oracle-parity mode: inline periodic solves instead
-        /// of host-driven background recalibration.
+        /// of the background recalibration thread.
         #[arg(long)]
         oracle_parity: bool,
     },
@@ -60,8 +71,7 @@ enum Cmd {
         /// Fixtures directory (defaults to $NESTRIS_FIXTURES_DIR).
         #[arg(long)]
         fixtures: Option<PathBuf>,
-        /// Stage-dump directory (defaults to testdata/stages next to the exe's
-        /// workspace).
+        /// Stage-dump directory (defaults to testdata/stages in the workspace).
         #[arg(long)]
         stages: Option<PathBuf>,
         /// Frames per fixture (matches the dumps).
@@ -71,9 +81,11 @@ enum Cmd {
         #[arg(long)]
         only: Option<String>,
     },
+    /// List DirectShow capture devices (Windows).
+    ListDevices,
 }
 
-fn engine_config(oracle_parity: bool) -> EngineConfig {
+pub fn engine_config(oracle_parity: bool) -> EngineConfig {
     let mut cfg = EngineConfig::default();
     if oracle_parity {
         cfg.calibration.background_recalibration = false;
@@ -81,15 +93,41 @@ fn engine_config(oracle_parity: bool) -> EngineConfig {
     cfg
 }
 
+fn load_config(path: Option<&PathBuf>, oracle_parity: bool) -> Result<EngineConfig> {
+    let mut cfg = match path {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path).context("read config")?;
+            toml::from_str(&raw).context("parse config TOML")?
+        }
+        None => EngineConfig::default(),
+    };
+    if oracle_parity {
+        cfg.calibration.background_recalibration = false;
+    }
+    Ok(cfg)
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Cmd::Run {
             input,
             jsonl,
+            ws,
+            ndjson,
+            config,
             start,
             frames,
             oracle_parity,
-        } => run(&input, jsonl, start, frames, oracle_parity),
+        } => run(RunArgs {
+            input,
+            jsonl,
+            ws,
+            ndjson,
+            config,
+            start,
+            frames,
+            oracle_parity,
+        }),
         Cmd::Bench {
             input,
             start,
@@ -102,35 +140,56 @@ fn main() -> Result<()> {
             frames,
             only,
         } => verify::verify(fixtures, stages, frames, only),
+        Cmd::ListDevices => {
+            print!("{}", capture_ffmpeg::list_devices()?);
+            Ok(())
+        }
     }
 }
 
-fn run(
-    input: &str,
+struct RunArgs {
+    input: String,
     jsonl: Option<PathBuf>,
+    ws: Option<String>,
+    ndjson: bool,
+    config: Option<PathBuf>,
     start: f64,
-    max_frames: u64,
+    frames: u64,
     oracle_parity: bool,
-) -> Result<()> {
-    let mut decoder = VideoDecoder::open(input, start)?;
-    let mut processor = FrameProcessor::new(engine_config(oracle_parity));
-    let mut sink: Box<dyn Write> = match &jsonl {
-        Some(path) => Box::new(std::io::BufWriter::new(
-            std::fs::File::create(path).context("create jsonl")?,
-        )),
-        None => Box::new(std::io::stdout().lock()),
-    };
+}
+
+fn run(args: RunArgs) -> Result<()> {
+    let cfg = load_config(args.config.as_ref(), args.oracle_parity)?;
+    let background = cfg.calibration.background_recalibration;
+    let mut decoder = VideoDecoder::open(&args.input, args.start)?;
+    let mut processor = FrameProcessor::new(cfg);
+
+    let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
+    if let Some(path) = &args.jsonl {
+        sinks.push(Box::new(JsonlSink::to_file(path)?));
+    }
+    if let Some(addr) = &args.ws {
+        sinks.push(Box::new(WebSocketSink::bind(addr)?));
+    }
+    if args.ndjson || sinks.is_empty() {
+        sinks.push(Box::new(JsonlSink::to_stdout()));
+    }
+    let mut sink = MultiSink { sinks };
+
+    let mut recalib = background.then(RecalibThread::start);
     let mut count = 0u64;
     while let Some(frame) = decoder.next_frame()? {
-        if max_frames > 0 && count >= max_frames {
+        if args.frames > 0 && count >= args.frames {
             break;
         }
         let output = processor.process(&frame);
-        sink.write_all(output.to_json().as_bytes())?;
-        sink.write_all(b"\n")?;
+        if let Some(recalib) = &mut recalib {
+            recalib.drive(&mut processor, &frame);
+        }
+        sink.publish(&output.to_json());
         count += 1;
     }
-    sink.flush()?;
+    sink.flush();
     eprintln!("{count} frames processed");
     Ok(())
 }
@@ -142,14 +201,16 @@ fn bench(input: &str, start: f64, frames: u64, warmup: u64) -> Result<()> {
     let mut fills: Vec<usize> = Vec::new();
     let mut locked_at: Option<u64> = None;
     let mut i = 0u64;
-    let mut solver = BackgroundSolveDriver::default();
+    // Bench measures the hot path the way production runs it: the solve is
+    // on the worker thread, only snapshot/offer costs land in the loop.
+    let mut recalib = RecalibThread::start();
     while let Some(frame) = decoder.next_frame()? {
         if i >= frames {
             break;
         }
         let t0 = std::time::Instant::now();
         let output = processor.process(&frame);
-        solver.drive(&mut processor, &frame);
+        recalib.drive(&mut processor, &frame);
         let dt = t0.elapsed().as_secs_f64() * 1000.0;
         if locked_at.is_none()
             && processor.lock_state() == nestris_engine::geometry_cal::lock::LockState::Locked
@@ -193,37 +254,4 @@ fn bench(input: &str, start: f64, frames: u64, warmup: u64) -> Result<()> {
         fills.iter().max().unwrap()
     );
     Ok(())
-}
-
-/// Host-side driver for the lock's background-solve protocol: runs the solve
-/// synchronously but *paced* (at most one per half second of stream time),
-/// mirroring the Python recalibrator's cadence without a thread. The bench
-/// includes its cost; `run` in live mode would put this on a worker thread.
-#[derive(Default)]
-struct BackgroundSolveDriver {
-    last_solve_ts: Option<f64>,
-}
-
-impl BackgroundSolveDriver {
-    fn drive(&mut self, processor: &mut FrameProcessor, frame: &Frame) {
-        let lock = processor.lock();
-        if !lock.wants_background_solve() {
-            return;
-        }
-        if let Some(last) = self.last_solve_ts
-            && frame.ts - last < 0.5
-        {
-            return;
-        }
-        self.last_solve_ts = Some(frame.ts);
-        let undistort = lock.undistort_map();
-        let result = nestris_engine::geometry_cal::calibration::estimate_geometry(
-            &frame.image,
-            nestris_engine::layout::get_layout(),
-            undistort.clone(),
-            undistort.is_none(),
-            frame.seq as u64,
-        );
-        processor.lock().offer_solution(result);
-    }
 }

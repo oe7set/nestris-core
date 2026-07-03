@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>nestris-core</title>
+    <style>
+      :root {
+        --bg: #14161a;
+        --panel: #1d2026;
+        --panel2: #23272f;
+        --text: #e6e9ee;
+        --dim: #8b93a1;
+        --accent: #3cbcfc;
+        --good: #58d854;
+        --warn: #fc9838;
+        --bad: #f83800;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--text);
+        font-family: "Segoe UI", system-ui, sans-serif; font-size: 14px;
+      }
+      header {
+        display: flex; align-items: center; gap: 12px;
+        padding: 10px 16px; background: var(--panel);
+      }
+      header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; }
+      button {
+        background: var(--panel2); color: var(--text); border: 1px solid #333a45;
+        border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px;
+      }
+      button:hover { border-color: var(--accent); }
+      #lock-state {
+        margin-left: auto; padding: 4px 10px; border-radius: 6px;
+        background: var(--panel2); color: var(--dim); font-weight: 600;
+      }
+      #lock-state.locked { color: var(--good); }
+      #lock-state.drift { color: var(--warn); }
+      main {
+        display: grid; gap: 12px; padding: 12px;
+        grid-template-columns: 1fr 340px;
+        grid-template-areas: "previews side";
+      }
+      #previews {
+        grid-area: previews; display: flex; flex-wrap: wrap; gap: 12px;
+        align-content: start;
+      }
+      .pane { background: var(--panel); border-radius: 8px; padding: 8px; }
+      .pane h2 {
+        margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--dim);
+        text-transform: uppercase; letter-spacing: 0.06em;
+      }
+      canvas { display: block; background: #000; border-radius: 4px; }
+      #raw-canvas { max-width: 100%; height: auto; }
+      #side { grid-area: side; display: flex; flex-direction: column; gap: 12px; }
+      #dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .tile { background: var(--panel2); border-radius: 6px; padding: 8px 10px; }
+      .tile .label { color: var(--dim); font-size: 11px; text-transform: uppercase; }
+      .tile .value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+      .tile.wide { grid-column: span 2; }
+      #state-banner {
+        grid-column: span 2; text-align: center; padding: 8px;
+        border-radius: 6px; background: var(--panel2); font-weight: 700;
+        letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim);
+      }
+      #state-banner.in_game { color: var(--good); }
+      #state-banner.paused { color: var(--warn); }
+      #state-banner.game_over { color: var(--bad); }
+      #events {
+        list-style: none; margin: 0; padding: 0; max-height: 220px;
+        overflow-y: auto; font-size: 12px;
+      }
+      #events li { padding: 3px 6px; border-bottom: 1px solid #2a2f38; }
+      #events li.info { color: var(--accent); }
+      #events li.warn { color: var(--warn); }
+      #events li.reject, #events li.correct { color: var(--bad); }
+      #events li.gold { color: gold; font-weight: 700; }
+      #drop-hint { color: var(--dim); padding: 24px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>nestris-core</h1>
+      <button id="btn-file">Open video…</button>
+      <button id="btn-camera">Camera</button>
+      <button id="btn-screen">Screen capture</button>
+      <button id="btn-reset">Reset lock</button>
+      <span id="fps" style="color: var(--dim)"></span>
+      <span id="lock-state">UNLOCKED</span>
+    </header>
+    <main>
+      <div id="previews">
+        <div class="pane" style="flex: 1 1 480px">
+          <h2>Source</h2>
+          <canvas id="raw-canvas" width="640" height="480"></canvas>
+          <div id="drop-hint">Open a video file, camera, or screen capture — or drop a video here.</div>
+        </div>
+        <div class="pane">
+          <h2>Canonical</h2>
+          <canvas id="canon-canvas" width="256" height="240" style="width: 512px; height: 480px; image-rendering: pixelated"></canvas>
+        </div>
+        <div class="pane">
+          <h2>Tracked field</h2>
+          <canvas id="playfield-canvas" width="200" height="400"></canvas>
+        </div>
+      </div>
+      <div id="side">
+        <div class="pane">
+          <h2>Dashboard</h2>
+          <div id="dashboard">
+            <div id="state-banner">unknown</div>
+            <div class="tile wide"><div class="label">Score</div><div class="value" id="v-score">—</div></div>
+            <div class="tile"><div class="label">Lines</div><div class="value" id="v-lines">—</div></div>
+            <div class="tile"><div class="label">Level</div><div class="value" id="v-level">—</div></div>
+            <div class="tile"><div class="label">Next</div><div class="value" id="v-next">—</div></div>
+            <div class="tile"><div class="label">Pieces</div><div class="value" id="v-pieces">—</div></div>
+            <div class="tile"><div class="label">Tetris rate</div><div class="value" id="v-trate">—</div></div>
+            <div class="tile"><div class="label">PPS</div><div class="value" id="v-pps">—</div></div>
+            <div class="tile"><div class="label">Burn</div><div class="value" id="v-burn">—</div></div>
+            <div class="tile"><div class="label">Drought</div><div class="value" id="v-drought">—</div></div>
+          </div>
+        </div>
+        <div class="pane">
+          <h2>Events</h2>
+          <ul id="events"></ul>
+        </div>
+      </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
