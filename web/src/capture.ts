@@ -28,7 +28,8 @@ export class CaptureSource {
     this.release();
     this.objectUrl = URL.createObjectURL(file);
     this.video.src = this.objectUrl;
-    this.video.loop = true;
+    // Looping is a transport-bar toggle now, not a default.
+    this.video.loop = false;
     await this.video.play();
   }
 

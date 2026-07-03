@@ -44,6 +44,16 @@ export function defaultConfig(): EngineConfigJson {
       freeze_on_clear_animation: true,
       playfield_stabilizer: true,
     },
+    // Web defaults: continuous tracking on (handheld/camera sources are the
+    // norm in a browser) and extended stats for the statistics section.
+    tracking: {
+      enabled: true,
+      search_radius_px: 8,
+      damping: 0.6,
+    },
+    output: {
+      extended_stats: true,
+    },
   };
 }
 
@@ -101,6 +111,20 @@ const SCHEMA: { group: string; fields: FieldDef[] }[] = [
       { path: "recognition.read_current_piece", label: "Track current piece", kind: "bool" },
       { path: "recognition.freeze_on_clear_animation", label: "Freeze during clear animation", kind: "bool" },
       { path: "recognition.playfield_stabilizer", label: "Playfield stabilizer", kind: "bool" },
+    ],
+  },
+  {
+    group: "Tracking",
+    fields: [
+      { path: "tracking.enabled", label: "Continuous tracking (handheld)", kind: "bool" },
+      { path: "tracking.search_radius_px", label: "Label search radius (px)", kind: "number", step: 1 },
+      { path: "tracking.damping", label: "Correction damping", kind: "number", step: 0.05 },
+    ],
+  },
+  {
+    group: "Output",
+    fields: [
+      { path: "output.extended_stats", label: "Extended statistics", kind: "bool" },
     ],
   },
 ];

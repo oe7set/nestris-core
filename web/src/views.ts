@@ -108,7 +108,14 @@ export class Views {
 
   updateLock(state: string, fps: number): void {
     this.lockLabel.textContent = state;
-    this.lockLabel.className = state === "LOCKED" ? "locked" : state === "DRIFT" ? "drift" : "";
+    this.lockLabel.className =
+      state === "LOCKED"
+        ? "locked"
+        : state === "DRIFT"
+          ? "drift"
+          : state === "REPLAY"
+            ? "replay"
+            : "";
     this.lockLabel.id = "lock-state";
     this.fpsLabel.textContent = `${fps.toFixed(0)} fps`;
   }
