@@ -515,6 +515,12 @@ impl qobject::AppBridge {
             }
             WorkerMsg::Ended => {
                 self.as_mut().set_buffering(false);
+                // Loop for video files: the worker exits at end of stream,
+                // so looping means restarting it from the top.
+                if *self.loop_enabled() && !self.is_replay() {
+                    self.start_source_at(0.0);
+                    return;
+                }
                 self.as_mut().set_running(false);
                 self.as_mut()
                     .toast(QString::from("info"), QString::from("End of stream"));
@@ -613,6 +619,16 @@ impl qobject::AppBridge {
         self.as_mut().set_fps(f64::from(update.fps));
         self.as_mut().set_recording(update.recording);
         self.as_mut().set_buffering(false);
+
+        // Loop for replays: the worker idles at the last frame instead of
+        // exiting, so looping is an instant seek back to the start.
+        if *self.loop_enabled()
+            && update.lock_state == "REPLAY"
+            && *self.duration_s() > 0.0
+            && update.position_s >= *self.duration_s() - 0.05
+        {
+            self.send(Cmd::Seek(0.0));
+        }
 
         // Capture health → ⚠ CHECK CAPTURE (same thresholds as egui).
         let healthy =

@@ -145,7 +145,7 @@ ApplicationWindow {
             x: 64
             y: 110
             width: 960
-            height: 720
+            height: 660
 
             RawFrameView {
                 id: rawView
@@ -292,12 +292,20 @@ ApplicationWindow {
             }
         }
 
+        // ---- transport ----
+        TransportBar {
+            x: 64
+            y: 786
+            width: 960
+            height: 40
+        }
+
         // ---- event stream ----
         PixelPanel {
             x: 64
-            y: 850
+            y: 844
             width: 960
-            height: 200
+            height: 212
             label: "EVENTS"
 
             ListView {
@@ -317,6 +325,22 @@ ApplicationWindow {
                 }
             }
         }
+    }
+
+    // ---- keyboard shortcuts (mirror the egui GUI) ----
+    Shortcut { sequence: "Space"; onActivated: AppBridge.togglePause() }
+    Shortcut { sequence: "Left"; onActivated: AppBridge.seekBy(-5) }
+    Shortcut { sequence: "Right"; onActivated: AppBridge.seekBy(5) }
+    Shortcut { sequence: ","; onActivated: AppBridge.stepBack() }
+    Shortcut { sequence: "."; onActivated: AppBridge.stepFrame() }
+    Shortcut { sequence: "Up"; onActivated: AppBridge.cycleSpeed(true) }
+    Shortcut { sequence: "Down"; onActivated: AppBridge.cycleSpeed(false) }
+    Shortcut { sequence: "R"; onActivated: AppBridge.resetLock() }
+    Shortcut { sequence: "O"; onActivated: AppBridge.openVideoDialog() }
+    Shortcut {
+        sequence: "F11"
+        onActivated: root.visibility = root.visibility === Window.FullScreen
+                     ? Window.Windowed : Window.FullScreen
     }
 
     // ---- drag & drop (videos and .ngf replays both open) ----
