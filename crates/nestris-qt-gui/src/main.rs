@@ -4,10 +4,41 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bridge;
+mod frames;
+mod worker_glue;
+
+use std::sync::OnceLock;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
+/// Optional source to open immediately: `nestris-qt-gui <source> [--start <s>]`.
+pub struct AutoStart {
+    pub source: String,
+    pub start_s: f64,
+}
+
+pub static AUTO_START: OnceLock<AutoStart> = OnceLock::new();
+
+fn parse_args() {
+    let mut source: Option<String> = None;
+    let mut start_s = 0.0f64;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--start" => {
+                start_s = args.next().and_then(|v| v.parse().ok()).unwrap_or_default();
+            }
+            _ if source.is_none() => source = Some(arg),
+            _ => {}
+        }
+    }
+    if let Some(source) = source {
+        let _ = AUTO_START.set(AutoStart { source, start_s });
+    }
+}
+
 fn main() {
+    parse_args();
     // Hand-rolled retro design: the non-native Basic style keeps controls
     // identical on every platform.
     // SAFETY: before QGuiApplication::new and any thread spawns.

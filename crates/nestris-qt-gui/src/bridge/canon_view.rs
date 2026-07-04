@@ -1,19 +1,15 @@
-//! Raw source preview: the (already downscaled) capture frame with the
-//! detected-playfield quad drawn on top in NES cyan.
+//! Canonical 256×240 preview, nearest-neighbor scaled (authentically
+//! pixelated, like the web GUI's `image-rendering: pixelated` canvas).
 
 use core::pin::Pin;
 
-use cxx_qt_lib::{QColor, QImage, QImageFormat, QLineF, QPainterRenderHint, QPen, QPointF, QRect};
+use cxx_qt_lib::{QImage, QImageFormat, QPainterRenderHint, QRect};
 
 use crate::frames;
 
 #[cxx_qt::bridge]
 pub mod qobject {
     unsafe extern "C++" {
-        include!("cxx-qt-lib/qcolor.h");
-        /// QColor from cxx_qt_lib
-        type QColor = cxx_qt_lib::QColor;
-
         include!("cxx-qt-lib/qsizef.h");
         /// QSizeF from cxx_qt_lib
         type QSizeF = cxx_qt_lib::QSizeF;
@@ -33,9 +29,9 @@ pub mod qobject {
         #[qobject]
         #[qml_element]
         #[base = QQuickPaintedItem]
-        type RawFrameView = super::RawFrameViewRust;
+        type CanonFrameView = super::CanonFrameViewRust;
 
-        /// Paint the current frame (called by the scene graph).
+        /// Paint the canonical frame (called by the scene graph).
         #[qinvokable]
         #[cxx_override]
         unsafe fn paint(self: Pin<&mut Self>, painter: *mut QPainter);
@@ -52,13 +48,13 @@ pub mod qobject {
     }
 
     // Constructor without a QObject* parent (the base takes QQuickItem*).
-    impl cxx_qt::Initialize for RawFrameView {}
+    impl cxx_qt::Initialize for CanonFrameView {}
 }
 
 #[derive(Default)]
-pub struct RawFrameViewRust;
+pub struct CanonFrameViewRust;
 
-impl qobject::RawFrameView {
+impl qobject::CanonFrameView {
     /// # Safety
     ///
     /// `painter` is valid for the duration of the paint call.
@@ -73,32 +69,24 @@ impl qobject::RawFrameView {
         let (vw, vh) = (size.width(), size.height());
 
         let store = frames::FRAMES.lock().unwrap();
-        let Some((rgba, w, h)) = &store.raw else {
-            return; // QML shows the drop zone / replay placeholder
+        let Some(canon) = &store.canon else {
+            return;
         };
-        let (fw, fh) = (*w as f64, *h as f64);
-        if fw <= 0.0 || fh <= 0.0 || vw <= 0.0 || vh <= 0.0 {
+        let (fw, fh) = (256.0f64, 240.0f64);
+        if vw <= 0.0 || vh <= 0.0 {
             return;
         }
 
-        // SAFETY: buffer length is w*h*4 (RGBA), produced by the worker.
+        // SAFETY: canonical frames are exactly 256*240*4 RGBA bytes.
         let image = unsafe {
-            QImage::from_raw_bytes(
-                rgba.clone(),
-                *w as i32,
-                *h as i32,
-                QImageFormat::Format_RGBA8888,
-            )
+            QImage::from_raw_bytes(canon.clone(), 256, 240, QImageFormat::Format_RGBA8888)
         };
 
+        // Nearest-neighbor: leave SmoothPixmapTransform off.
         painter
             .as_mut()
-            .set_render_hint(QPainterRenderHint::SmoothPixmapTransform, true);
-        painter
-            .as_mut()
-            .set_render_hint(QPainterRenderHint::Antialiasing, true);
+            .set_render_hint(QPainterRenderHint::SmoothPixmapTransform, false);
 
-        // Aspect-fit, centered.
         let scale = (vw / fw).min(vh / fh);
         let (dw, dh) = (fw * scale, fh * scale);
         let (dx, dy) = ((vw - dw) / 2.0, (vh - dh) / 2.0);
@@ -106,22 +94,6 @@ impl qobject::RawFrameView {
             &QRect::new(dx as i32, dy as i32, dw as i32, dh as i32),
             &image,
         );
-
-        // Lock-quad overlay in NES cyan, mapped into the fitted rect.
-        if let Some(quad) = store.lock_quad {
-            let mut pen = QPen::default();
-            pen.set_color(&QColor::from_rgb(0x3c, 0xbc, 0xfc));
-            pen.set_width(2);
-            painter.as_mut().set_pen(&pen);
-            let map = |p: (f32, f32)| (dx + f64::from(p.0) * scale, dy + f64::from(p.1) * scale);
-            for i in 0..4 {
-                let (x1, y1) = map(quad[i]);
-                let (x2, y2) = map(quad[(i + 1) % 4]);
-                painter
-                    .as_mut()
-                    .draw_linef(&QLineF::new(QPointF::new(x1, y1), QPointF::new(x2, y2)));
-            }
-        }
     }
 
     pub fn refresh(self: Pin<&mut Self>) {
@@ -129,6 +101,6 @@ impl qobject::RawFrameView {
     }
 }
 
-impl cxx_qt::Initialize for qobject::RawFrameView {
+impl cxx_qt::Initialize for qobject::CanonFrameView {
     fn initialize(self: Pin<&mut Self>) {}
 }
