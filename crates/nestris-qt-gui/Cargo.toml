@@ -1,0 +1,37 @@
+[package]
+name = "nestris-qt-gui"
+description = "Qt 6 desktop GUI (cxx-qt + QML): NestrisChamps-style live dashboard"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ErwinSpitaler/nestris-core"
+
+# Standalone workspace: excluded from the repo root so `cargo build
+# --workspace` never needs a Qt SDK. Building here requires Qt 6 (qmake on
+# PATH or the QMAKE env var), see README.md.
+[workspace]
+
+[[bin]]
+name = "nestris-qt-gui"
+path = "src/main.rs"
+
+[dependencies]
+nestris-engine = { path = "../nestris-engine", features = ["parallel"] }
+nestris-gui-core = { path = "../nestris-gui-core" }
+nestris-host = { path = "../nestris-host" }
+anyhow = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+rfd = "0.15"
+cxx = "1"
+cxx-qt = "0.9"
+cxx-qt-lib = { version = "0.9", features = ["full"] }
+
+[build-dependencies]
+cxx-qt-build = "0.9"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.dev.package.nestris-vision]
+opt-level = 2

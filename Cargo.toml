@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# The Qt GUI is a standalone workspace: building it needs a Qt SDK (qmake),
+# which `cargo build --workspace` must not require.
+exclude = ["crates/nestris-qt-gui"]
 
 [workspace.package]
 version = "0.1.0"

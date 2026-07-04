@@ -1,4 +1,7 @@
 /target
+# The excluded Qt crate is its own workspace with its own target dir.
+crates/nestris-qt-gui/target/
+crates/nestris-qt-gui/.qmlls.ini
 **/*.rs.bk
 web/node_modules/
 web/dist/

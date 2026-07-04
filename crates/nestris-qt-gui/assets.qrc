@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/nestris">
+        <file>assets/fonts/PressStart2P-Regular.ttf</file>
+    </qresource>
+</RCC>
