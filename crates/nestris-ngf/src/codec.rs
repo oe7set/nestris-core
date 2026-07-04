@@ -327,6 +327,10 @@ pub fn decode_frame(bytes: &[u8]) -> Result<(NgfFrame, usize), NgfError> {
 
 #[cfg(test)]
 mod tests {
+    // Bit-field literals are grouped by field width (ver/type/player,
+    // 24-bit BE score), not into even digit groups.
+    #![allow(clippy::unusual_byte_groupings)]
+
     use super::*;
 
     fn sample_frame() -> NgfFrame {

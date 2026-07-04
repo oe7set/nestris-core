@@ -84,6 +84,9 @@ pub fn match_template_ccoeff_normed(image: &Image, templ: &Image) -> ResponseMap
     // Each response row is an independent pure function of the inputs, so
     // the `parallel` row split is bit-exact.
     let compute_row = |oy: usize, out_row: &mut [f32]| {
+        // `ox` also indexes the integral-image windows, not just `out_row`,
+        // so enumerate() would not remove the arithmetic indexing.
+        #[allow(clippy::needless_range_loop)]
         for ox in 0..out_w {
             // Cross term: exact integer dot product (row-wise u32, safe for
             // widths < 66k px at max u8 values).

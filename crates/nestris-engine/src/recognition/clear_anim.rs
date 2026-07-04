@@ -257,7 +257,7 @@ mod tests {
         let done = with_full_rows(&[], &[(19, 0)]);
         det.update(&done, 40.0, false);
         det.update(&done, 40.0, false);
-        assert!(det.update(&done, 40.0, false) == false || !det.animating());
+        assert!(!det.update(&done, 40.0, false) || !det.animating());
         let p = det
             .take_finished_prediction()
             .expect("prediction handed out");

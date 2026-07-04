@@ -12,7 +12,7 @@ use nestris_engine::stats_ext::{
     PIECE_ORDER,
 };
 
-use crate::session::SessionStore;
+use nestris_gui_core::session::SessionStore;
 
 const ACCENT: Color32 = Color32::from_rgb(0x3c, 0xbc, 0xfc);
 const GOLD: Color32 = Color32::from_rgb(0xff, 0xd7, 0x00);

@@ -13,6 +13,7 @@ nestris-vision = { path = "crates/nestris-vision" }
 nestris-engine = { path = "crates/nestris-engine" }
 nestris-host = { path = "crates/nestris-host" }
 nestris-ngf = { path = "crates/nestris-ngf" }
+nestris-gui-core = { path = "crates/nestris-gui-core" }
 serde = { version = "1", features = ["derive"] }
 # preserve_order: the engine replicates Python dict insertion-order semantics
 # (STATISTICS fusion), so JSON objects must not be silently re-sorted.

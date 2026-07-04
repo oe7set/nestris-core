@@ -10,24 +10,27 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod session;
 mod settings_ui;
 mod stats_panels;
 mod toasts;
-mod worker;
 
 use std::time::Instant;
 
 use eframe::egui;
-use nestris_engine::enums::{GameState, Piece};
+use nestris_engine::enums::Piece;
 use nestris_engine::nes_palette;
-use nestris_engine::output::OutputFrame;
+use nestris_gui_core::events::{self, EventRow};
+use nestris_gui_core::game_end::GameEndTracker;
+use nestris_gui_core::session::SessionStore;
+use nestris_gui_core::settings::GuiSettings;
+use nestris_gui_core::worker::{self, Cmd, GuiUpdate, WorkerHandle, WorkerMsg};
 use nestris_host::capture_ffmpeg;
 
-use crate::session::SessionStore;
-use crate::settings_ui::{GuiSettings, settings_window};
+use crate::settings_ui::settings_window;
 use crate::toasts::{ToastKind, Toasts};
-use crate::worker::{Cmd, GuiUpdate, WorkerHandle, WorkerMsg};
+
+/// This frontend's settings file (the Qt GUI persists its own).
+pub const SETTINGS_FILE: &str = "gui-settings.toml";
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -42,11 +45,6 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
-}
-
-struct EventRow {
-    text: String,
-    severity: String,
 }
 
 /// Below this confidence a dashboard value renders grayed out.
@@ -77,16 +75,14 @@ struct App {
     session: SessionStore,
     /// When the lock first left LOCKED (for the CHECK CAPTURE alarm).
     unhealthy_since: Option<Instant>,
-    /// Previous frame's game state (game-end detection for the PB tables).
-    prev_game_state: Option<GameState>,
-    /// Last in-game snapshot, recorded into the session on game over.
-    last_ingame: Option<(OutputFrame, f64)>,
+    /// Game-end detection for the PB tables.
+    game_end: GameEndTracker,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        let settings = GuiSettings::load();
+        let settings = GuiSettings::load_from(SETTINGS_FILE);
         Self {
             source: settings.last_source.clone(),
             settings,
@@ -108,8 +104,7 @@ impl App {
             toasts: Toasts::default(),
             session: SessionStore::load(),
             unhealthy_since: None,
-            prev_game_state: None,
-            last_ingame: None,
+            game_end: GameEndTracker::default(),
         }
     }
 
@@ -136,10 +131,9 @@ impl App {
         self.latest = None;
         self.raw_tex = None;
         self.canon_tex = None;
-        self.prev_game_state = None;
-        self.last_ingame = None;
+        self.game_end = GameEndTracker::default();
         self.settings.last_source = self.source.clone();
-        self.settings.save();
+        self.settings.save_to(SETTINGS_FILE);
         self.worker = Some(worker::spawn(
             self.source.clone(),
             self.settings.engine.clone(),
@@ -198,7 +192,7 @@ impl App {
         // Events from every update (not just the newest) would need the
         // worker to batch them; latest-wins matches the previous behavior.
         if let Some(update) = newest {
-            self.push_events(&update.output);
+            events::push_events(&mut self.events, &update.output);
             self.track_game_end(&update);
             if update.raw_w == 0 {
                 // Replay mode: no source video to preview.
@@ -244,59 +238,13 @@ impl App {
     /// Record a finished game into the session PB store when the state
     /// leaves play for game-over.
     fn track_game_end(&mut self, update: &GuiUpdate) {
-        let state = update.output.game_state;
-        if state == GameState::InGame {
-            self.last_ingame = Some((update.output.clone(), update.position_s));
-        }
-        let was_playing = matches!(
-            self.prev_game_state,
-            Some(GameState::InGame | GameState::Paused)
-        );
-        if was_playing
-            && state == GameState::GameOver
-            && let Some((frame, _)) = self.last_ingame.take()
-            && let Some(score) = frame.fields.score
-        {
-            let (date, time) = session::local_stamp();
-            self.session.push(session::GameRecord {
-                date,
-                time,
-                start_level: None,
-                end_level: frame.fields.level,
-                score,
-                lines: frame.fields.lines.unwrap_or(0),
-                tetris_rate: frame.stats.tetris_rate,
-                duration_s: frame.stats.active_seconds.unwrap_or(0.0),
-            });
+        if let Some(record) = self.game_end.update(&update.output, update.position_s) {
+            let score = record.score;
+            self.session.push(record);
             self.toasts.push(
                 ToastKind::Info,
                 format!("Game over — {score} points recorded"),
             );
-        }
-        self.prev_game_state = Some(state);
-    }
-
-    fn push_events(&mut self, output: &OutputFrame) {
-        for ev in &output.events {
-            let mm = (ev.ts / 60.0) as u32;
-            let ss = ev.ts % 60.0;
-            let extra = ev
-                .new
-                .as_ref()
-                .map(|v| format!(" → {v}"))
-                .unwrap_or_default();
-            self.events.push(EventRow {
-                text: format!("{mm}:{ss:04.1} {} {}{}", ev.field, ev.reason, extra),
-                severity: if ev.reason == "clear_tetris" {
-                    "gold".into()
-                } else {
-                    ev.severity.clone()
-                },
-            });
-        }
-        if self.events.len() > 300 {
-            let excess = self.events.len() - 300;
-            self.events.drain(..excess);
         }
     }
 
@@ -642,7 +590,8 @@ impl App {
                 let slider = egui::Slider::new(&mut self.seek_target, 0.0..=duration)
                     .show_value(false)
                     .trailing_fill(true);
-                let response = ui.add_sized([ui.available_width() - time_width, 18.0], slider);
+                let response =
+                    ui.add_sized([ui.available_width() - time_width, 18.0], slider);
                 // Hover time preview: map the pointer x onto the time axis.
                 if let Some(pos) = response.hover_pos() {
                     let frac =
@@ -897,6 +846,6 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         self.stop();
-        self.settings.save();
+        self.settings.save_to(SETTINGS_FILE);
     }
 }

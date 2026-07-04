@@ -457,6 +457,10 @@ fn thin<T>(series: &mut Vec<T>) {
 
 #[cfg(test)]
 mod tests {
+    // Grid-fill helpers index rows/columns deliberately; iterator forms
+    // would obscure the board coordinates under test.
+    #![allow(clippy::needless_range_loop)]
+
     use super::*;
 
     fn empty_grid() -> Vec<Vec<u8>> {

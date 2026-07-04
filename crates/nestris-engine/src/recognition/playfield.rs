@@ -555,6 +555,49 @@ fn assign_colors(
     }
 }
 
+/// Re-separate white vs a low-chroma gray accent by relative brightness
+/// (port of `_split_neutral_gray`).
+fn split_neutral_gray(
+    raw_lab: &[(f32, f32, f32)],
+    ids: &mut [u8],
+    raw_targets: &[(f32, f32, f32); 3],
+) {
+    let chroma = raw_targets.map(|(_, a, b)| (a - 128.0).hypot(b - 128.0));
+    let mut gray_accent_ids: Vec<u8> = Vec::new();
+    for k in [1usize, 2] {
+        if chroma[k] < NEUTRAL_CHROMA {
+            gray_accent_ids.push(k as u8 + 1);
+        }
+    }
+    if gray_accent_ids.is_empty() {
+        return;
+    }
+    let neutral = |id: u8| id == 1 || gray_accent_ids.contains(&id);
+    let neutral_lums: Vec<f32> = ids
+        .iter()
+        .zip(raw_lab.iter())
+        .filter(|(id, _)| neutral(**id))
+        .map(|(_, &(l, _, _))| l)
+        .collect();
+    if neutral_lums.is_empty() {
+        return;
+    }
+    let brightest = neutral_lums
+        .iter()
+        .cloned()
+        .fold(f32::NEG_INFINITY, f32::max);
+    let gray_id = gray_accent_ids[0];
+    for (id, &(l, _, _)) in ids.iter_mut().zip(raw_lab.iter()) {
+        if neutral(*id) {
+            *id = if l >= brightest * GRAY_WHITE_SPLIT {
+                1
+            } else {
+                gray_id
+            };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,48 +677,5 @@ mod tests {
         let feats = vec![WHITE_LAB; 2];
         let ids = vec![WHITE_ID; 2];
         assert!(white_balance_gains(&feats, &ids, 1.0).is_none());
-    }
-}
-
-/// Re-separate white vs a low-chroma gray accent by relative brightness
-/// (port of `_split_neutral_gray`).
-fn split_neutral_gray(
-    raw_lab: &[(f32, f32, f32)],
-    ids: &mut [u8],
-    raw_targets: &[(f32, f32, f32); 3],
-) {
-    let chroma = raw_targets.map(|(_, a, b)| (a - 128.0).hypot(b - 128.0));
-    let mut gray_accent_ids: Vec<u8> = Vec::new();
-    for k in [1usize, 2] {
-        if chroma[k] < NEUTRAL_CHROMA {
-            gray_accent_ids.push(k as u8 + 1);
-        }
-    }
-    if gray_accent_ids.is_empty() {
-        return;
-    }
-    let neutral = |id: u8| id == 1 || gray_accent_ids.contains(&id);
-    let neutral_lums: Vec<f32> = ids
-        .iter()
-        .zip(raw_lab.iter())
-        .filter(|(id, _)| neutral(**id))
-        .map(|(_, &(l, _, _))| l)
-        .collect();
-    if neutral_lums.is_empty() {
-        return;
-    }
-    let brightest = neutral_lums
-        .iter()
-        .cloned()
-        .fold(f32::NEG_INFINITY, f32::max);
-    let gray_id = gray_accent_ids[0];
-    for (id, &(l, _, _)) in ids.iter_mut().zip(raw_lab.iter()) {
-        if neutral(*id) {
-            *id = if l >= brightest * GRAY_WHITE_SPLIT {
-                1
-            } else {
-                gray_id
-            };
-        }
     }
 }
