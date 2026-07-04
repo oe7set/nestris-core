@@ -590,8 +590,7 @@ impl App {
                 let slider = egui::Slider::new(&mut self.seek_target, 0.0..=duration)
                     .show_value(false)
                     .trailing_fill(true);
-                let response =
-                    ui.add_sized([ui.available_width() - time_width, 18.0], slider);
+                let response = ui.add_sized([ui.available_width() - time_width, 18.0], slider);
                 // Hover time preview: map the pointer x onto the time axis.
                 if let Some(pos) = response.hover_pos() {
                     let frac =

@@ -321,7 +321,7 @@ fn height_chart(ui: &mut egui::Ui, ext: &ExtendedStats) {
 }
 
 fn pb_tables(ui: &mut egui::Ui, session: &SessionStore) {
-    let (today, _) = crate::session::local_stamp();
+    let (today, _) = nestris_gui_core::session::local_stamp();
     ui.columns(2, |cols| {
         pb_table(
             &mut cols[0],
@@ -332,7 +332,7 @@ fn pb_tables(ui: &mut egui::Ui, session: &SessionStore) {
     });
 }
 
-fn pb_table(ui: &mut egui::Ui, title: &str, rows: Vec<&crate::session::GameRecord>) {
+fn pb_table(ui: &mut egui::Ui, title: &str, rows: Vec<&nestris_gui_core::session::GameRecord>) {
     ui.group(|ui| {
         ui.strong(title);
         if rows.is_empty() {
