@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Nestris Core
+Comment=NES Tetris video recognition dashboard
+Exec=nestris-qt-gui
+Icon=nestris-qt-gui
+Categories=Game;Utility;
+Terminal=false
