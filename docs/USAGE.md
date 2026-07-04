@@ -195,6 +195,35 @@ role of the Python PySide6 GUI) drives the same engine as the CLI:
   `Apply & save` persists to `%APPDATA%\nestris-core\gui-settings.toml` and
   restarts the pipeline at the current position with the new configuration.
 
+## Qt desktop GUI (`nestris-qt-gui`)
+
+The second desktop frontend: Qt 6 + QML (via cxx-qt) with a
+NestrisChamps-`classic_1080`-style dashboard as the whole app shell —
+the stats layout is always visible and the big top-left zone switches
+between the drop-zone/source picker and the live preview (RAW/CANON
+chips). It shares `nestris-gui-core` with the egui GUI, so features,
+recording behavior, and the PB store (`session_pbs.json`) are identical;
+only the settings file differs (`qt-gui-settings.toml`).
+
+The crate is **excluded from the root workspace** so `cargo build
+--workspace` never needs a Qt SDK. Building it requires Qt 6.8+
+(`qmake` on PATH or the `QMAKE` env var):
+
+```powershell
+# Windows (Qt via the online installer or `pip install aqtinstall`):
+#   aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -O C:\Qt
+$env:QMAKE = "C:\Qt\6.8.3\msvc2022_64\bin\qmake.exe"
+cd crates/nestris-qt-gui
+cargo build --release
+# Running from a dev tree needs the Qt DLLs on PATH:
+$env:PATH = "C:\Qt\6.8.3\msvc2022_64\bin;$env:PATH"
+cargo run --release -- "video.mp4" --start 30   # optional auto-open source
+```
+
+Release zips bundle the Qt runtime (windeployqt / macdeployqt /
+AppImage), so end users need no Qt install. See
+[RELEASING.md](RELEASING.md).
+
 ## Web GUI
 
 ```sh

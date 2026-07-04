@@ -58,3 +58,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # check needs no NDK linker; keeps the UniFFI surface building for ARM.
       - run: cargo check -p nestris-android --target aarch64-linux-android
+
+  # The Qt GUI lives in its own workspace (excluded from the root so a Qt
+  # SDK is never required for `cargo build --workspace`); this job is also
+  # its fmt/clippy gate, since the root `cargo fmt --all` never reaches it.
+  qt:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: crates/nestris-qt-gui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/nestris-qt-gui -> target
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libgl1-mesa-dev
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          cache: true
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo build --release

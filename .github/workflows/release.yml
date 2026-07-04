@@ -1,0 +1,206 @@
+name: Release
+
+# Tag `vX.Y.Z` to publish a release; workflow_dispatch runs the full build
+# as a dry-run (artifacts only, no GitHub release).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('v0.0.0-dev.{0}', github.run_number) }}
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            suffix: windows-x64
+          - os: ubuntu-latest
+            suffix: linux-x64
+          - os: macos-latest
+            suffix: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            crates/nestris-qt-gui -> target
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libgl1-mesa-dev libfuse2t64
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          cache: true
+
+      - name: Build CLI and egui GUI
+        run: cargo build --release -p nestris-cli -p nestris-gui
+
+      - name: Build Qt GUI
+        working-directory: crates/nestris-qt-gui
+        run: cargo build --release
+
+      # ---- stage per-component directories ----
+
+      - name: Stage binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force stage/cli, stage/gui, stage/qt-gui | Out-Null
+          Copy-Item target/release/nestris.exe stage/cli/
+          Copy-Item target/release/nestris-gui.exe stage/gui/
+          Copy-Item crates/nestris-qt-gui/target/release/nestris-qt-gui.exe stage/qt-gui/
+          windeployqt --release --qmldir crates/nestris-qt-gui/qml --no-translations stage/qt-gui/nestris-qt-gui.exe
+
+      - name: Stage binaries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p stage/cli stage/gui stage/qt-gui
+          cp target/release/nestris stage/cli/
+          cp target/release/nestris-gui stage/gui/
+          # Qt GUI ships as an AppImage with the Qt runtime bundled.
+          curl -fsSL -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSL -o linuxdeploy-plugin-qt https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          export QML_SOURCES_PATHS="$PWD/crates/nestris-qt-gui/qml"
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          ./linuxdeploy --appdir AppDir \
+            -e crates/nestris-qt-gui/target/release/nestris-qt-gui \
+            -d crates/nestris-qt-gui/packaging/nestris-qt-gui.desktop \
+            -i crates/nestris-qt-gui/packaging/icon.png \
+            --icon-filename nestris-qt-gui \
+            --plugin qt --output appimage
+          mv Nestris_Core*.AppImage stage/qt-gui/nestris-qt-gui-x86_64.AppImage 2>/dev/null \
+            || mv nestris-qt-gui*.AppImage stage/qt-gui/nestris-qt-gui-x86_64.AppImage
+
+      - name: Stage binaries (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p stage/cli stage/gui stage/qt-gui
+          cp target/release/nestris stage/cli/
+          cp target/release/nestris-gui stage/gui/
+          # Assemble the .app bundle, deploy Qt, ad-hoc sign.
+          APP="stage/qt-gui/Nestris Core.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp crates/nestris-qt-gui/target/release/nestris-qt-gui "$APP/Contents/MacOS/"
+          sed "s/@VERSION@/${VERSION#v}/g" crates/nestris-qt-gui/packaging/Info.plist.in > "$APP/Contents/Info.plist"
+          mkdir icon.iconset
+          for s in 16 32 64 128 256; do
+            sips -z $s $s crates/nestris-qt-gui/packaging/icon.png --out icon.iconset/icon_${s}x${s}.png >/dev/null
+          done
+          iconutil -c icns icon.iconset -o "$APP/Contents/Resources/icon.icns"
+          macdeployqt "$APP" -qmldir=crates/nestris-qt-gui/qml
+          codesign --force --deep --sign - "$APP"
+
+      # ---- zip components + combined bundle ----
+
+      - name: Package zips (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item README.md, LICENSE stage/cli/; Copy-Item README.md, LICENSE stage/gui/
+          Copy-Item README.md, LICENSE stage/qt-gui/
+          Copy-Item .github/release/QT-NOTICE.md stage/qt-gui/
+          7z a "out/nestris-cli-$env:VERSION-windows-x64.zip" ./stage/cli/*
+          7z a "out/nestris-gui-$env:VERSION-windows-x64.zip" ./stage/gui/*
+          7z a "out/nestris-qt-gui-$env:VERSION-windows-x64.zip" ./stage/qt-gui/*
+          New-Item -ItemType Directory -Force bundle/nestris | Out-Null
+          Copy-Item -Recurse stage/cli, stage/gui, stage/qt-gui bundle/nestris/
+          Copy-Item README.md, LICENSE bundle/nestris/
+          Copy-Item -Recurse docs bundle/nestris/docs
+          7z a "out/nestris-$env:VERSION-windows-x64-bundle.zip" ./bundle/nestris
+      - name: Package zips (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p out bundle/nestris
+          for d in cli gui qt-gui; do cp README.md LICENSE stage/$d/; done
+          cp .github/release/QT-NOTICE.md stage/qt-gui/
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            (cd stage/cli && zip -qr "../../out/nestris-cli-$VERSION-${{ matrix.suffix }}.zip" .)
+            (cd stage/gui && zip -qr "../../out/nestris-gui-$VERSION-${{ matrix.suffix }}.zip" .)
+            # ditto preserves the .app framework symlinks
+            ditto -c -k --keepParent stage/qt-gui "out/nestris-qt-gui-$VERSION-${{ matrix.suffix }}.zip"
+          else
+            (cd stage/cli && zip -qr "../../out/nestris-cli-$VERSION-${{ matrix.suffix }}.zip" .)
+            (cd stage/gui && zip -qr "../../out/nestris-gui-$VERSION-${{ matrix.suffix }}.zip" .)
+            (cd stage/qt-gui && zip -qr "../../out/nestris-qt-gui-$VERSION-${{ matrix.suffix }}.zip" .)
+          fi
+          cp -R stage/cli stage/gui stage/qt-gui bundle/nestris/
+          cp README.md LICENSE bundle/nestris/
+          cp -R docs bundle/nestris/docs
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ditto -c -k --keepParent bundle/nestris "out/nestris-$VERSION-${{ matrix.suffix }}-bundle.zip"
+          else
+            (cd bundle && zip -qr --symlinks "../out/nestris-$VERSION-${{ matrix.suffix }}-bundle.zip" nestris)
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.suffix }}
+          path: out/*.zip
+          if-no-files-found: error
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install wasm-pack --locked
+      # SIMD build is the project default (tools/build-wasm.ps1).
+      - run: wasm-pack build crates/nestris-wasm --target web --release
+        env:
+          RUSTFLAGS: -C target-feature=+simd128
+      # The wasm pkg must exist before npm ci (file: dependency).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - name: Package web zip
+        run: |
+          mkdir -p out
+          cp README.md LICENSE web/dist/
+          (cd web/dist && zip -qr "../../out/nestris-web-$VERSION.zip" .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: out/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [desktop, web]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        run: cd dist && sha256sum *.zip > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS

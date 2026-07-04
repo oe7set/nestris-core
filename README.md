@@ -52,11 +52,13 @@ Highlights beyond the original port:
 | `nestris-ngf` | NGF (NestrisChamps Game Format) codec, game recorder, replay engine. Sans-io, wasm-clean. |
 | `nestris-host` | Shared native glue: ffmpeg-pipe capture, output sinks, recalibration worker thread, crash-safe recording sink. |
 | `nestris-cli` | Native binary: `run`/`replay`/`bench`/`verify`/`list-devices`. |
+| `nestris-gui-core` | GUI-agnostic desktop core shared by the frontends: pipeline worker thread, persisted settings, session PB store. |
 | `nestris-gui` | Native desktop GUI (egui): previews, dashboard, stats window, transport, replay viewer, full settings dialog. |
+| `nestris-qt-gui` | Native desktop GUI (Qt 6 + QML via cxx-qt): NestrisChamps-`classic_1080`-style dashboard shell. Excluded from the root workspace — building it needs a Qt SDK ([docs/USAGE.md](docs/USAGE.md)). |
 | `nestris-wasm` | `wasm-bindgen` exports (binary snapshot boundary) for the browser GUI in `web/`. |
 | `nestris-android` | UniFFI (Kotlin) bindings. |
 
-Dependency direction is strict: `vision ← engine ← ngf ← {cli, gui, wasm}`.
+Dependency direction is strict: `vision ← engine ← ngf ← gui-core ← {cli, gui, qt-gui, wasm}`.
 
 ## Quickstart
 
@@ -81,6 +83,12 @@ stats window with persistent high scores, full transport (pause, speed,
 frame stepping, seek with hover preview) plus keyboard shortcuts, automatic
 `.ngf.gz` game recording, and a settings dialog for every engine knob
 (persisted to `%APPDATA%\nestris-core\gui-settings.toml`).
+
+There is also a **Qt 6 desktop GUI** (`crates/nestris-qt-gui`, cxx-qt +
+QML) with the same features presented as an always-on
+NestrisChamps-`classic_1080` stats dashboard; it needs a Qt SDK to build
+(see [docs/USAGE.md](docs/USAGE.md)) and ships with the Qt runtime
+bundled in [Releases](../../releases).
 
 ## Web GUI
 

@@ -30,6 +30,18 @@ The engine performs **no I/O whatsoever** — no threads, no sockets, no files,
 no clocks. That single property is what lets the identical code run natively,
 in a Web Worker, and on Android.
 
+The two desktop GUIs (egui `nestris-gui` and Qt/QML `nestris-qt-gui`)
+share one GUI-agnostic layer, **`nestris-gui-core`**: the pipeline worker
+thread (decode → process → recalibrate → publish, plus transport control
+and NGF recording), the persisted `GuiSettings` (each frontend passes its
+own TOML file name), the session PB store (`session_pbs.json`, shared, so
+games recorded in either GUI appear in both), event-row formatting, and
+game-end detection. A frontend is only rendering plus a message pump over
+`worker::{Cmd, WorkerMsg, GuiUpdate}`. The Qt crate is excluded from the
+root workspace so building the workspace never requires a Qt SDK; it
+consumes the same crates by path and paints frames through
+QQuickPaintedItem subclasses implemented in Rust (cxx-qt).
+
 ## Per-frame data flow
 
 `FrameProcessor::process(&mut self, &Frame) -> OutputFrame` is the one
