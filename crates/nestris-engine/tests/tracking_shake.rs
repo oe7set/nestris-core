@@ -161,7 +161,9 @@ fn run(tracking: bool) -> (f64, f64, LockState) {
     assert!(samples > (FRAMES - SETTLE) / 2, "probe must keep matching");
     let mean = sum / samples as f64;
     if std::env::var_os("SHAKE_TRACE").is_some() {
-        eprintln!("summary tracking={tracking}: mean={mean:.2} worst={worst:.2} ({samples} samples)");
+        eprintln!(
+            "summary tracking={tracking}: mean={mean:.2} worst={worst:.2} ({samples} samples)"
+        );
     }
     (mean, worst, state)
 }

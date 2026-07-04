@@ -45,8 +45,7 @@ impl CellVotes {
                 sums[id] += self.weights[k];
             }
         }
-        let newest =
-            self.ids[(self.cursor as usize + VOTE_WINDOW - 1) % VOTE_WINDOW] as usize;
+        let newest = self.ids[(self.cursor as usize + VOTE_WINDOW - 1) % VOTE_WINDOW] as usize;
         let mut best = newest;
         for (id, &sum) in sums.iter().enumerate() {
             if sum > sums[best] {

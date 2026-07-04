@@ -424,11 +424,7 @@ fn assign_cost(f: Lab, t: Lab, hue_weight: f32) -> f32 {
 }
 
 /// One pass of nearest-target assignment; returns (ids, ambiguity flags).
-fn assign_pass(
-    feats: &[Lab],
-    targets: &[Lab; 3],
-    tuning: ColorTuning,
-) -> (Vec<u8>, Vec<bool>) {
+fn assign_pass(feats: &[Lab], targets: &[Lab; 3], tuning: ColorTuning) -> (Vec<u8>, Vec<bool>) {
     let mut ids: Vec<u8> = Vec::with_capacity(feats.len());
     let mut amb: Vec<bool> = Vec::with_capacity(feats.len());
     for &f in feats {
@@ -494,11 +490,8 @@ fn scale_targets_per_channel(
             b.clamp(0.0, 255.0) as u8,
         );
         let scale = |v: u8, g: f32| ((v as f32 * exposure * g).clamp(0.0, 255.0)) as u8;
-        let (l2, a2, b2) = color::bgr_pixel_to_lab(
-            scale(bb, gains.0),
-            scale(gg, gains.1),
-            scale(rr, gains.2),
-        );
+        let (l2, a2, b2) =
+            color::bgr_pixel_to_lab(scale(bb, gains.0), scale(gg, gains.1), scale(rr, gains.2));
         (l2 as f32, a2 as f32, b2 as f32)
     })
 }
@@ -568,7 +561,11 @@ mod tests {
 
     #[test]
     fn default_tuning_matches_plain_distance() {
-        let targets: [Lab; 3] = [(240.0, 128.0, 128.0), (150.0, 190.0, 128.0), (150.0, 128.0, 190.0)];
+        let targets: [Lab; 3] = [
+            (240.0, 128.0, 128.0),
+            (150.0, 190.0, 128.0),
+            (150.0, 128.0, 190.0),
+        ];
         let feats = vec![(150.0, 185.0, 130.0), (238.0, 129.0, 127.0)];
         let (ids, amb) = assign_pass(&feats, &targets, ColorTuning::default());
         assert_eq!(ids, vec![ACCENT_A_ID, WHITE_ID]);

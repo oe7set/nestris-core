@@ -258,7 +258,9 @@ mod tests {
         det.update(&done, 40.0, false);
         det.update(&done, 40.0, false);
         assert!(det.update(&done, 40.0, false) == false || !det.animating());
-        let p = det.take_finished_prediction().expect("prediction handed out");
+        let p = det
+            .take_finished_prediction()
+            .expect("prediction handed out");
         assert_eq!(p.cleared_rows, 1);
         assert_eq!(prediction_mismatches(&p.occupancy, &done), 0);
     }
@@ -282,7 +284,10 @@ mod tests {
         det.update(&with_full_rows(&[0, 1], &[]), 40.0, false);
         det.update(&with_full_rows(&[0, 1, 2, 3], &[]), 40.0, false);
         det.update(&with_full_rows(&[0, 1, 2, 3, 4, 5], &[]), 40.0, false);
-        assert!(det.curtain_active(), "monotone top-down fill is the curtain");
+        assert!(
+            det.curtain_active(),
+            "monotone top-down fill is the curtain"
+        );
         // A new game clears the board: curtain lifts.
         det.update(&empty(), 40.0, false);
         assert!(!det.curtain_active());

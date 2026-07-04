@@ -195,7 +195,9 @@ impl StatsEngine {
         let mut grid = playfield.clone();
         if let Some(cells) = &state.current_piece_cells {
             for &(r, c) in cells {
-                if let Some(cell) = grid.get_mut(r as usize).and_then(|row| row.get_mut(c as usize))
+                if let Some(cell) = grid
+                    .get_mut(r as usize)
+                    .and_then(|row| row.get_mut(c as usize))
                 {
                     *cell = 0;
                 }

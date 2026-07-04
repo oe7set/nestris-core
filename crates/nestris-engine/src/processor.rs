@@ -405,12 +405,11 @@ impl FrameProcessor {
             // Robust mode: never *start* an animation while paused (a menu
             // flash is not a clear) or while the game-over curtain sweeps.
             let suppress_entry = robust
-                && (self.last_state == Some(GameState::Paused)
-                    || self.clear_anim.curtain_active());
+                && (self.last_state == Some(GameState::Paused) || self.clear_anim.curtain_active());
             let was_animating = self.clear_anim.animating();
-            animating = self
-                .clear_anim
-                .update(&playfield.occupancy, frame_luma_mean, suppress_entry);
+            animating =
+                self.clear_anim
+                    .update(&playfield.occupancy, frame_luma_mean, suppress_entry);
             self.live_flash = self.clear_anim.flash_active();
             curtain = robust && self.clear_anim.curtain_active();
 

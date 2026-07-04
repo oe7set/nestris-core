@@ -404,8 +404,8 @@ pub fn board_metrics(grid: &[Vec<u8>]) -> BoardMetrics {
         })
         .count();
 
-    let monotone = heights.windows(2).all(|w| w[0] <= w[1])
-        || heights.windows(2).all(|w| w[0] >= w[1]);
+    let monotone =
+        heights.windows(2).all(|w| w[0] <= w[1]) || heights.windows(2).all(|w| w[0] >= w[1]);
 
     let max_height = *heights.iter().max().unwrap_or(&0) as u8;
     let avg_height = heights.iter().sum::<usize>() as f32 / cols as f32;

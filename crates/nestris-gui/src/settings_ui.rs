@@ -249,16 +249,9 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut GuiS
                 );
                 ui.add_enabled_ui(e.tracking.enabled, |ui| {
                     let mut radius = e.tracking.search_radius_px as i32;
-                    ui.add(
-                        egui::Slider::new(&mut radius, 4..=16).text("Label search radius (px)"),
-                    );
+                    ui.add(egui::Slider::new(&mut radius, 4..=16).text("Label search radius (px)"));
                     e.tracking.search_radius_px = radius as u32;
-                    slider_f64(
-                        ui,
-                        &mut e.tracking.damping,
-                        0.1..=1.0,
-                        "Correction damping",
-                    );
+                    slider_f64(ui, &mut e.tracking.damping, 0.1..=1.0, "Correction damping");
                 });
             });
 

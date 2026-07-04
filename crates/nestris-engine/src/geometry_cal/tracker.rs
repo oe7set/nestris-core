@@ -469,8 +469,7 @@ mod tests {
                     let gx = (x0 + tx) as i64 + dx.round_ties_even() as i64;
                     let gy = (y0 + ty) as i64 + dy.round_ties_even() as i64;
                     if (0..256).contains(&gx) && (0..240).contains(&gy) {
-                        img.data[gy as usize * 256 + gx as usize] =
-                            tpl.data[ty * tpl.width + tx];
+                        img.data[gy as usize * 256 + gx as usize] = tpl.data[ty * tpl.width + tx];
                     }
                 }
             }

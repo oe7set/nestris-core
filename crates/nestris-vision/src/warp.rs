@@ -196,7 +196,10 @@ impl WarpMap {
                 .for_each(|(entries, out_row)| process_row(entries, out_row));
         }
         #[cfg(not(feature = "parallel"))]
-        for (entries, out_row) in self.entries.chunks(self.out_w).zip(out.data.chunks_mut(row_len))
+        for (entries, out_row) in self
+            .entries
+            .chunks(self.out_w)
+            .zip(out.data.chunks_mut(row_len))
         {
             process_row(entries, out_row);
         }

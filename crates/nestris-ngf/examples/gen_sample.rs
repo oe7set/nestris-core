@@ -5,7 +5,9 @@ use nestris_engine::enums::Piece;
 use nestris_ngf::codec::{NgfFrame, encode_v3};
 
 fn main() {
-    let out = std::env::args().nth(1).expect("usage: gen_sample <out.ngf>");
+    let out = std::env::args()
+        .nth(1)
+        .expect("usage: gen_sample <out.ngf>");
     let mut buf = Vec::new();
     for i in 0u32..10 {
         let mut field = [0u8; 200];

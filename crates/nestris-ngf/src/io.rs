@@ -98,8 +98,7 @@ pub fn decode_all(bytes: &[u8]) -> io::Result<Vec<NgfFrame>> {
 /// browser download path).
 #[cfg(feature = "gz")]
 pub fn compress_gz(bytes: &[u8]) -> io::Result<Vec<u8>> {
-    let mut encoder =
-        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(bytes)?;
     encoder.finish()
 }

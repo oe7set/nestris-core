@@ -120,8 +120,7 @@ impl RecordingSink {
             gameid
         );
         let path = self.dir.join(format!("{base}.ngf.part"));
-        let file = File::create(&path)
-            .with_context(|| format!("create {}", path.display()))?;
+        let file = File::create(&path).with_context(|| format!("create {}", path.display()))?;
         self.part = Some(PartFile {
             path,
             base,
@@ -206,7 +205,9 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("nestris-recording-tests").join(name);
+        let dir = std::env::temp_dir()
+            .join("nestris-recording-tests")
+            .join(name);
         let _ = fs::remove_dir_all(&dir);
         dir
     }

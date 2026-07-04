@@ -289,7 +289,10 @@ mod tests {
         }
     }
 
-    fn drive(rec: &mut GameRecorder, frames: impl IntoIterator<Item = OutputFrame>) -> Vec<RecorderEvent> {
+    fn drive(
+        rec: &mut GameRecorder,
+        frames: impl IntoIterator<Item = OutputFrame>,
+    ) -> Vec<RecorderEvent> {
         frames.into_iter().flat_map(|f| rec.push(&f)).collect()
     }
 
@@ -315,13 +318,18 @@ mod tests {
             events.extend(rec.push(&mk(GameState::GameOver, false)));
         }
 
-        assert!(matches!(events[0], RecorderEvent::GameStarted { gameid: 1 }));
+        assert!(matches!(
+            events[0],
+            RecorderEvent::GameStarted { gameid: 1 }
+        ));
         let finished = events
             .iter()
             .find_map(|e| match e {
-                RecorderEvent::GameFinished { gameid, frames, bytes } => {
-                    Some((*gameid, *frames, bytes.len()))
-                }
+                RecorderEvent::GameFinished {
+                    gameid,
+                    frames,
+                    bytes,
+                } => Some((*gameid, *frames, bytes.len())),
                 _ => None,
             })
             .expect("game finished");

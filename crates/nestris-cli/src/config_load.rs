@@ -40,8 +40,8 @@ pub fn load(
 }
 
 fn file_to_value(path: &Path) -> Result<Value> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("read config {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -54,9 +54,9 @@ fn file_to_value(path: &Path) -> Result<Value> {
         }
         "json" => serde_json::from_str(&raw).context("parse config JSON")?,
         "yaml" | "yml" => serde_yaml_ng::from_str(&raw).context("parse config YAML")?,
-        other => bail!(
-            "unsupported config extension {other:?} (expected .toml, .json, .yaml or .yml)"
-        ),
+        other => {
+            bail!("unsupported config extension {other:?} (expected .toml, .json, .yaml or .yml)")
+        }
     };
     Ok(value)
 }

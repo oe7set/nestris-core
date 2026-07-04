@@ -168,7 +168,10 @@ pub fn encode_v3(frame: &NgfFrame, out: &mut Vec<u8>) {
     out.push((score >> 8) as u8);
     out.push(score as u8);
 
-    let instant_das = frame.instant_das.map(|d| d.min(0x1E)).unwrap_or(SENTINEL_DAS);
+    let instant_das = frame
+        .instant_das
+        .map(|d| d.min(0x1E))
+        .unwrap_or(SENTINEL_DAS);
     out.push(instant_das << 3 | piece_to_code(frame.preview));
     let cur_das = frame
         .cur_piece_das
@@ -195,7 +198,9 @@ pub fn encode_v3(frame: &NgfFrame, out: &mut Vec<u8>) {
     // 200 cells x 2 bits, 4 per byte, MSB-first.
     for chunk in frame.field.chunks_exact(4) {
         out.push(
-            (chunk[0] & 0b11) << 6 | (chunk[1] & 0b11) << 4 | (chunk[2] & 0b11) << 2
+            (chunk[0] & 0b11) << 6
+                | (chunk[1] & 0b11) << 4
+                | (chunk[2] & 0b11) << 2
                 | (chunk[3] & 0b11),
         );
     }
@@ -223,7 +228,9 @@ pub fn decode_frame(bytes: &[u8]) -> Result<(NgfFrame, usize), NgfError> {
     let game_type = (first & 0b0001_1000) >> 3;
     let player_num = first & 0b111;
     let gameid = u16::from_be_bytes([f[1], f[2]]);
-    let ctime_ms = (f[3] as u32) << 20 | (f[4] as u32) << 12 | (f[5] as u32) << 4
+    let ctime_ms = (f[3] as u32) << 20
+        | (f[4] as u32) << 12
+        | (f[5] as u32) << 4
         | ((f[6] & 0xF0) as u32) >> 4;
     let lines_hi = (f[6] & 0x0F) as u16;
 
@@ -283,7 +290,9 @@ pub fn decode_frame(bytes: &[u8]) -> Result<(NgfFrame, usize), NgfError> {
         field_start = after;
     } else {
         // Version 1.
-        let score = ((f[7] & 0x0F) as u32) << 17 | (f[8] as u32) << 9 | (f[9] as u32) << 1
+        let score = ((f[7] & 0x0F) as u32) << 17
+            | (f[8] as u32) << 9
+            | (f[9] as u32) << 1
             | ((f[10] & 0x80) as u32) >> 7;
         let lines = ((f[10] & 0x7F) as u16) << 2 | ((f[11] & 0xC0) as u16) >> 6;
         let level = f[11] & 0x3F;
@@ -421,10 +430,18 @@ mod tests {
             level: Some(0x14),
             score: Some(0x0567_89),
             instant_das: Some(0x0A),
-            preview: Some(Piece::T),    // code 0
+            preview: Some(Piece::T), // code 0
             cur_piece_das: Some(0x1E),
             cur_piece: Some(Piece::L), // code 5
-            counts: [Some(1), Some(2), Some(3), Some(4), Some(5), Some(6), Some(7)],
+            counts: [
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(4),
+                Some(5),
+                Some(6),
+                Some(7),
+            ],
             ..NgfFrame::default()
         };
         frame.field[0] = 1;

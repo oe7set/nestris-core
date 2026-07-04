@@ -113,7 +113,9 @@ impl W<'_> {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
     fn opt_i32(&mut self, v: Option<i64>) {
-        self.i32(v.map_or(i32::MIN, |x| x.clamp(i64::from(i32::MIN + 1), i64::from(i32::MAX)) as i32));
+        self.i32(v.map_or(i32::MIN, |x| {
+            x.clamp(i64::from(i32::MIN + 1), i64::from(i32::MAX)) as i32
+        }));
     }
     fn opt_f64(&mut self, v: Option<f64>) {
         self.f64(v.unwrap_or(f64::NAN));

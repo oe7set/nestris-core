@@ -80,12 +80,7 @@ fn tile(ui: &mut egui::Ui, label: &str, value: String, color: Color32) {
 fn tile_row(ui: &mut egui::Ui, output: &OutputFrame, ext: &ExtendedStats) {
     let s = &output.stats;
     ui.horizontal_wrapped(|ui| {
-        tile(
-            ui,
-            "SCORE",
-            fmt_opt(output.fields.score),
-            Color32::WHITE,
-        );
+        tile(ui, "SCORE", fmt_opt(output.fields.score), Color32::WHITE);
         tile(
             ui,
             "PACE",
@@ -163,23 +158,23 @@ fn points_panel(ui: &mut egui::Ui, output: &OutputFrame, ext: &ExtendedStats) {
     ];
     ui.group(|ui| {
         ui.strong(format!("POINTS {}", output.fields.score.unwrap_or(0)));
-        egui::Grid::new("points-grid").num_columns(3).show(ui, |ui| {
-            for (label, points) in rows {
-                ui.label(label);
-                ui.monospace(format!("{points:06}"));
-                ui.monospace(format!("{:.0}%", points as f64 * 100.0 / total as f64));
-                ui.end_row();
-            }
-        });
+        egui::Grid::new("points-grid")
+            .num_columns(3)
+            .show(ui, |ui| {
+                for (label, points) in rows {
+                    ui.label(label);
+                    ui.monospace(format!("{points:06}"));
+                    ui.monospace(format!("{:.0}%", points as f64 * 100.0 / total as f64));
+                    ui.end_row();
+                }
+            });
     });
 }
 
 fn chart_frame(ui: &mut egui::Ui, title: &str, height: f32) -> (egui::Painter, Rect) {
     ui.strong(title);
-    let (response, painter) = ui.allocate_painter(
-        vec2(ui.available_width(), height),
-        egui::Sense::hover(),
-    );
+    let (response, painter) =
+        ui.allocate_painter(vec2(ui.available_width(), height), egui::Sense::hover());
     let rect = response.rect.shrink(4.0);
     painter.rect_filled(response.rect, 4.0, Color32::from_rgb(0x10, 0x14, 0x18));
     (painter, rect)
@@ -328,7 +323,11 @@ fn height_chart(ui: &mut egui::Ui, ext: &ExtendedStats) {
 fn pb_tables(ui: &mut egui::Ui, session: &SessionStore) {
     let (today, _) = crate::session::local_stamp();
     ui.columns(2, |cols| {
-        pb_table(&mut cols[0], "HIGH SCORES — TODAY", session.best(Some(&today), 5));
+        pb_table(
+            &mut cols[0],
+            "HIGH SCORES — TODAY",
+            session.best(Some(&today), 5),
+        );
         pb_table(&mut cols[1], "HIGH SCORES — OVERALL", session.best(None, 5));
     });
 }
@@ -340,24 +339,25 @@ fn pb_table(ui: &mut egui::Ui, title: &str, rows: Vec<&crate::session::GameRecor
             ui.label(egui::RichText::new("no finished games yet").color(DIM));
             return;
         }
-        egui::Grid::new(title).num_columns(4).striped(true).show(ui, |ui| {
-            ui.label(egui::RichText::new("Score").small().color(DIM));
-            ui.label(egui::RichText::new("Lines").small().color(DIM));
-            ui.label(egui::RichText::new("Lvl").small().color(DIM));
-            ui.label(egui::RichText::new("TRT").small().color(DIM));
-            ui.end_row();
-            for row in rows {
-                ui.monospace(row.score.to_string());
-                ui.monospace(row.lines.to_string());
-                ui.monospace(
-                    row.end_level.map_or("—".into(), |v| v.to_string()),
-                );
-                ui.monospace(
-                    row.tetris_rate
-                        .map_or("—".into(), |r| format!("{:.0}%", r * 100.0)),
-                );
+        egui::Grid::new(title)
+            .num_columns(4)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("Score").small().color(DIM));
+                ui.label(egui::RichText::new("Lines").small().color(DIM));
+                ui.label(egui::RichText::new("Lvl").small().color(DIM));
+                ui.label(egui::RichText::new("TRT").small().color(DIM));
                 ui.end_row();
-            }
-        });
+                for row in rows {
+                    ui.monospace(row.score.to_string());
+                    ui.monospace(row.lines.to_string());
+                    ui.monospace(row.end_level.map_or("—".into(), |v| v.to_string()));
+                    ui.monospace(
+                        row.tetris_rate
+                            .map_or("—".into(), |r| format!("{:.0}%", r * 100.0)),
+                    );
+                    ui.end_row();
+                }
+            });
     });
 }

@@ -139,7 +139,8 @@ impl Engine {
         self.canon_buf.clear();
         self.canon_buf.reserve(canon.width * canon.height * 4);
         for px in canon.data.chunks_exact(3) {
-            self.canon_buf.extend_from_slice(&[px[2], px[1], px[0], 255]);
+            self.canon_buf
+                .extend_from_slice(&[px[2], px[1], px[0], 255]);
         }
         self.canon_buf.len()
     }
@@ -327,7 +328,13 @@ impl Replay {
     /// [`Replay::snapshot_ptr`].
     pub fn snapshot_at(&mut self, index: usize) -> usize {
         let output = self.engine.output_at(index);
-        snapshot::encode_snapshot(&output, LOCK_CODE_REPLAY, None, false, &mut self.snapshot_buf);
+        snapshot::encode_snapshot(
+            &output,
+            LOCK_CODE_REPLAY,
+            None,
+            false,
+            &mut self.snapshot_buf,
+        );
         self.snapshot_buf.len()
     }
 
