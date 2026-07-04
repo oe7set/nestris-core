@@ -33,8 +33,25 @@ needed — they can be combined:
 | `--ws <addr>` | WebSocket broadcast server, e.g. `--ws 127.0.0.1:8765`; every connected client receives each frame as a text message (slow clients drop oldest frames, never stalling the engine) |
 | `--ndjson` | also print NDJSON to stdout (default sink when nothing else is set) |
 | `--start <s>` / `--frames <n>` | window into the file |
-| `--config <toml>` | engine tuning (see below) |
+| `--config <file>` | engine tuning — `.toml`, `.json`, or `.yaml`/`.yml` by extension (see below) |
+| `--preset handheld` | enable continuous geometry tracking for shaky phone footage |
+| `--set path.to.field=value` | override a single config field (repeatable, applied after file + preset, field names validated), e.g. `--set fusion.vote_window=7` |
+| `--no-record` | disable the automatic per-game NGF recording (on by default) |
+| `--record-dir <dir>` | recording directory (default `Documents\nestris-recordings`) |
+| `--record-raw` | save plain `.ngf` instead of gzipped `.ngf.gz` |
+| `--record-partial` | also record games already in progress when capture starts |
 | `--oracle-parity` | deterministic verification mode: inline geometry solves instead of the background thread |
+
+### Replay a recording
+
+```sh
+nestris replay recordings\20260703-193000_g001.ngf.gz --jsonl replay.jsonl
+nestris replay game.ngf --speed 1.0 --ws 127.0.0.1:8765   # real-time re-emit
+```
+
+Re-derives full schema-v4 frames (statistics included) from a recorded
+game — see [NGF.md](NGF.md) for the format, recording lifecycle, and the
+GUI replay viewers.
 
 ### Live capture (Windows capture card / UVC device)
 
@@ -60,8 +77,10 @@ See [VERIFICATION.md](VERIFICATION.md).
 
 ## Engine configuration
 
-`--config engine.toml` mirrors the Python `AppConfig` structure and defaults.
-Everything is optional; omitted values use the defaults shown:
+`--config` accepts **TOML, JSON, or YAML** (dispatched by file extension);
+the structure mirrors the Python `AppConfig` and adds the `tracking` and
+`output` groups. Everything is optional; omitted values use the defaults
+shown (TOML reference):
 
 ```toml
 region = "NTSC"                    # advisory tag: "NTSC" | "PAL"
@@ -101,6 +120,38 @@ statistics_every_n = 6             # STATISTICS rail read cadence
 read_current_piece = true
 freeze_on_clear_animation = true   # hold the grid during line-clear frames
 playfield_stabilizer = true        # per-cell Schmitt hysteresis
+# Color-discrimination refinements (default off = oracle-exact classic path):
+color_voting = false               # per-cell temporal color voting (5 frames)
+color_hue_weight = 0.0             # 0..1: blend a hue-angle term into accent
+                                   # assignment (exposure-invariant)
+adaptive_ambiguity = false         # tighten the ambiguity ratio on palettes
+                                   # with close accent pairs
+white_balance = false              # per-channel gains from white cells
+piece_color_uniform = false        # force the falling piece to one color
+# Clear-animation / game-over robustness (default off):
+clear_prediction = false           # predict the post-clear board, validate it,
+                                   # detect the game-over curtain, and block
+                                   # false animation entry while paused
+level_hint_on_clear = false        # next level's palette right after a
+                                   # level-crossing clear
+
+[tracking]                         # continuous geometry micro-tracking for
+enabled = false                    # handheld/shaky sources (GUIs default ON;
+                                   # CLI via --preset handheld). Idles on
+                                   # stable capture-card sources (deadband).
+search_radius_px = 8               # HUD-label search window (canonical px)
+min_label_score = 0.4              # NCC floor for a label match
+deadband_px = 0.35                 # corrections below this are ignored
+damping = 0.6                      # blend factor toward the fitted correction
+max_correction_px = 12.0           # larger label offsets = mismatch, not motion
+miss_escalate = 4                  # tracker misses before the drift path
+motion_adopt_threshold_px = 1.0    # sustained motion above this relaxes the
+                                   # never-regress solve adoption margin
+drift_solve_interval_s = 0.15      # fast background-solve pacing under motion
+
+[output]
+extended_stats = false             # attach the stats_ext block to every frame
+                                   # (see docs/STATS.md; GUIs always show it)
 ```
 
 ## Desktop GUI (`nestris-gui`)
@@ -112,57 +163,87 @@ cargo run --release -p nestris-gui
 The native desktop app (egui — pure Rust, no Qt SDK required; it fills the
 role of the Python PySide6 GUI) drives the same engine as the CLI:
 
-- **Source picker** — `Open video…` file dialog, or refresh the DirectShow
-  device list with `Devices ⟳` and pick a capture card / webcam.
+- **Source picker** — `Open video…` / `Open replay…` file dialogs, drag &
+  drop (videos and `.ngf` replays alike), or refresh the DirectShow device
+  list with `Devices ⟳` and pick a capture card / webcam.
 - **Previews** — the raw source with the detected-playfield overlay, the
   rectified 256×240 canonical frame, and the tracked field rendered in the
-  authentic NES level palette with the falling piece on top.
+  authentic NES level palette with the falling piece on top. The layout
+  wraps on narrow windows; the side panel is resizable.
 - **Dashboard + events** — score/lines/level/next, pieces, tetris rate, PPS,
-  burn, drought, clear distribution; the event stream shows line clears
-  (TETRIS in gold), plausibility rejections, and new-game boundaries.
-- **Transport bar** (files) — pause, playback speed (0.25×–4× or Max), and a
-  seek slider (seeking reopens the ffmpeg pipe at the target position; the
-  engine keeps its geometry lock and resets only temporal tracking).
+  burn, drought, clear distribution. Values gray out when their fused
+  confidence drops below 0.4, and a **⚠ CHECK CAPTURE** alarm appears after
+  2 s of lock loss or low overall confidence. The event stream shows line
+  clears (TETRIS in gold), plausibility rejections, and new-game boundaries.
+- **📊 Stats window** — the NestrisChamps-style dashboard: SCORE / PACE /
+  LINES / LEVEL / EFF / BRN / TRT / I-DRT tiles, LINES and POINTS
+  breakdowns, the TRT trend chart, per-piece distribution with drought
+  bars, the HEIGHT & STATE timeline, and the persistent TODAY/OVERALL
+  high-score tables ([STATS.md](STATS.md)).
+- **Transport bar** (files + replays) — play/pause, frame stepping
+  (`|◀` / `▶|`), playback speed (0.25×–4× or Max), and a seek slider with a
+  hover time preview. Video seeks reopen the ffmpeg pipe (a spinner shows
+  while buffering); replay seeks are instant.
+- **Keyboard shortcuts** — `Space` pause, `←`/`→` seek ∓5 s, `,`/`.` frame
+  step, `↑`/`↓` speed, `R` reset lock, `O` open video, `F11` fullscreen.
+- **Recording** — every detected game is saved as `.ngf.gz` by default
+  (`● REC` shows while a game is being recorded; a toast confirms each
+  save). Toggle and output directory live in Settings → Output.
 - **Settings dialog** (⚙) — every `EngineConfig` knob grouped like the TOML
-  reference above, plus output sinks (WebSocket broadcast, JSONL file).
+  reference above (including Tracking, on by default in the GUI), plus
+  recording and output sinks (WebSocket broadcast, JSONL file).
   `Apply & save` persists to `%APPDATA%\nestris-core\gui-settings.toml` and
   restarts the pipeline at the current position with the new configuration.
 
 ## Web GUI
 
 ```sh
-# 1. Build the wasm package (repeat after engine changes):
-wasm-pack build crates/nestris-wasm --target web --release
+# 1. Build the wasm package (repeat after engine changes; enables SIMD):
+tools/build-wasm.ps1        # or: wasm-pack build crates/nestris-wasm --target web --release
 
 # 2. Run the dev server:
 cd web
 npm install
 npm run dev            # → http://localhost:5173
+npm test               # snapshot-codec unit tests (vitest)
 ```
 
-In the page: **Open video…** (or drag & drop a file), **Camera** (point a
-phone/webcam at a CRT), or **Screen capture** (share the window of an
-emulator). The header shows the lock state and the processing rate; panes
-show the raw source with the detected-playfield overlay, the rectified
-canonical frame, and the tracked playfield rendered in the authentic NES
-level palette; the side panel has the dashboard tiles and the event stream
-(line clears, plausibility rejections, new-game boundaries).
+In the page: **Open video…**, **Open replay…** (`.ngf` / `.ngf.gz`),
+**Camera** (point a phone/webcam at a CRT), or **Screen capture** (share
+the window of an emulator) — or drag & drop any of them. The header shows
+the lock state, the processing rate, a perf HUD (worker engine time p50/p95
+and dropped frames), the recording toggle (`● REC`, on by default —
+finished games download as `.ngf.gz`), and the settings button.
 
-The **⚙ Settings** button opens the engine-settings dialog: the same
-calibration / fusion / plausibility / recognition knobs as the TOML
-reference, persisted in the browser's `localStorage`. `Apply & save`
-rebuilds the wasm engine with the new configuration (the lock re-acquires
-within a couple of frames).
+Files and replays get a **transport bar**: play/pause, frame stepping,
+speed, a seek bar with buffered ranges and a hover time bubble, and a loop
+toggle. Keyboard shortcuts mirror the desktop app (`Space`, `,`/`.`,
+`↑`/`↓`, `R`, `O`). The **Statistics** section is the NestrisChamps-style
+dashboard (tiles, LINES/POINTS breakdowns, TRT trend, piece distribution,
+HEIGHT & STATE, TODAY/OVERALL high scores in `localStorage` —
+[STATS.md](STATS.md)). The layout collapses to a single column under
+900 px.
+
+The **⚙ Settings** dialog exposes the same calibration / fusion /
+plausibility / recognition / tracking / output knobs as the TOML reference,
+persisted in `localStorage`. Web defaults enable continuous tracking and
+extended stats. `Apply & save` rebuilds the wasm engine (the lock
+re-acquires within a couple of frames).
 
 Implementation notes:
 
-- Exactly **one frame copy** crosses JS→WASM per frame: the RGBA
-  `ImageData` bytes are written straight into the engine's linear memory.
-- Geometry re-solves run in a **Web Worker** holding its own wasm instance,
-  so the main thread never blocks; results are adopted under the same
-  never-regress rule as everywhere else.
-- `npm run build` produces a fully static `dist/` (508 KB wasm, ~220 KB
-  gzipped) that any static host can serve.
+- The **full engine runs in a Web Worker**: the page thread only captures
+  `ImageBitmap`s (transferred, newest-wins back-pressure) and paints the
+  UI, so heavy frames never jank the page.
+- Results cross the JS boundary as **compact binary snapshots** written
+  into a persistent wasm buffer (no per-frame JSON); the decoder is tested
+  against the actual Rust encoder output (`npm test`).
+- Geometry re-solves run in a nested Web Worker with its own wasm instance,
+  paced faster automatically while the geometry tracker reports motion.
+- The wasm package is built with **SIMD (simd128)** and `wasm-opt -O4`
+  (`tools/build-wasm.ps1`; a `-Compat` switch produces a non-SIMD fallback
+  package for very old browsers).
+- `npm run build` produces a fully static `dist/` that any host can serve.
 
 ## Android bindings
 

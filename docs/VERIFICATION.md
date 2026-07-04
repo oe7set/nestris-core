@@ -136,3 +136,42 @@ cargo run --release -p nestris-cli -- verify --fixtures ..\NestrisLTM_OCR\fixtur
 - The verify harness stamps frames with the oracle's own capture timestamps,
   so pace metrics are compared on identical clocks (PyAV pts vs seq/fps
   would otherwise drift).
+
+## Intentional divergences & gating
+
+The engine has grown capabilities beyond the Python oracle. Every one of
+them ships behind a config flag whose **default reproduces the oracle
+byte-for-byte**, so the gates above stay meaningful. The gate column names
+the proof that the default path is untouched.
+
+| Feature | Flag (default) | Neutrality gate |
+|---|---|---|
+| Continuous geometry tracking | `tracking.enabled` (off; GUIs enable it) | full verify + `tracking_shake.rs` (synthetic-shake harness) |
+| Temporal color voting | `recognition.color_voting` (off) | recognition replay (`replay_canonical.rs`) |
+| Hue-angle assignment term | `recognition.color_hue_weight` (0.0) | recognition replay |
+| Adaptive ambiguity ratio | `recognition.adaptive_ambiguity` (off) | recognition replay |
+| White-balance re-assign | `recognition.white_balance` (off) | recognition replay |
+| Falling-piece color uniformity | `recognition.piece_color_uniform` (off) | recognition replay |
+| Clear prediction + curtain + pause guard | `recognition.clear_prediction` (off) | state replay (`replay_readings.rs`) + verify |
+| Level palette hint after clears | `recognition.level_hint_on_clear` (off) | recognition replay |
+| Extended stats on the wire | `output.extended_stats` (off) | state replay byte-diffs the serialized JSON |
+| Row-parallel warp/NCC (`parallel` feature) | on for native binaries | bit-exact by construction; CV goldens + **full verify run with the feature enabled** |
+
+NGF recording and replay live outside the verified pipeline (they consume
+its output); their own gates are the codec round-trip/bit-fixture tests,
+a cross-check against the NestrisLTM Python importer, and deterministic
+record → replay round trips.
+
+## Performance appendix
+
+`nestris bench --input tetris_01.mp4 --start 22 --frames 400`, development
+machine, production configuration (background solves off-thread):
+
+| Build | p50 | p90 | p99 | p50 fps |
+|---|---|---|---|---|
+| scalar (pre-`parallel`) | 3.60 ms | 4.68 ms | 6.20 ms | 278 |
+| `parallel` row splits | **2.85 ms** | 3.70 ms | 4.61 ms | **351** |
+
+Browser (engine in a Web Worker, binary snapshot boundary, SIMD build):
+the page thread only captures ImageBitmaps and paints — engine time shows
+in the web app's perf HUD (p50/p95 per frame plus dropped-frame count).

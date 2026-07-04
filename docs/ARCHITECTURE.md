@@ -43,6 +43,16 @@ synchronous entry point. For each BGR frame:
    the background protocol (below). Geometry updates are EMA-smoothed to
    absorb camera shake; a jump ≥ 24 px replaces the geometry outright.
 
+   With `tracking.enabled` (the GUI default, for handheld sources), a
+   **continuous micro-tracker** (`geometry_cal/tracker.rs`) additionally
+   re-matches the four HUD labels plus playfield-edge probes on every
+   locked frame, fits a damped similarity correction with a velocity
+   feed-forward term, and composes it onto the homography — so the next
+   frame is rectified where the camera actually points. A deadband keeps
+   stable capture-card sources bit-identical (no rectifier rebuild); misses
+   and sustained motion raise a solve-urgency hint that speeds up the
+   background solves and relaxes the never-regress adoption margin.
+
 2. **Rectification** (`geometry_cal/calibration.rs::Rectifier`) — the source
    frame is warped onto the canonical 256×240 NES raster. On every adopted
    geometry the rectifier precomputes a **sampling map**: for each of the
@@ -99,11 +109,38 @@ synchronous entry point. For each BGR frame:
    40/100/300/1200 × (level+1) disambiguate merged clears), tetris rate,
    burn, drought, piece count reconciled against the STATISTICS rail, and
    pace metrics on an active-play clock (pauses and menus don't dilute PPS).
+   An extended block (`stats_ext.rs`, [STATS.md](STATS.md)) adds the
+   dashboard metrics — points breakdown, EFF, PACE, per-piece distribution
+   and droughts, board-shape flags, TRT/height time series — attached to
+   the wire format only when `output.extended_stats` is on.
 
 8. **Output** (`output.rs`) — everything is assembled into an `OutputFrame`
    and serialized as **schema v4** JSON, field-for-field identical to the
    Python implementation's wire format (`Option`s serialize as `null`, enum
    values and key order match pydantic's output).
+
+## Recording & replay (`nestris-ngf`)
+
+A separate sans-io, wasm-clean crate owns the NGF (NestrisChamps Game
+Format) surface: the bit-exact v3 encoder / v1–v3 decoder, the
+`GameRecorder` (one `.ngf.gz` per detected game, crash-safe `.part`
+streaming on native hosts), and the `ReplayEngine` that re-derives full
+output frames — statistics included — from a recording via the same
+`StatsEngine` as live analysis. See [NGF.md](NGF.md). Hosts wire it up:
+the CLI and desktop GUI record to `Documents\nestris-recordings`; the
+browser records in memory and downloads finished games.
+
+## The web architecture (worker + binary snapshots)
+
+The browser runs the **entire engine in a dedicated Web Worker** that owns
+the wasm instance and spawns the recalibration worker itself. The page
+thread captures `ImageBitmap`s (transferred, newest-wins back-pressure)
+and paints the UI. Per-frame results cross the JS boundary as **versioned
+little-endian binary snapshots** written into a persistent wasm buffer
+(`nestris-wasm/src/snapshot.rs` ↔ `web/src/snapshot.ts`, cross-tested
+against the actual Rust encoder output) — no per-frame JSON, no per-frame
+`Vec` returns. The wasm package is built with SIMD (`simd128`) and
+`wasm-opt -O4` via `tools/build-wasm.ps1`.
 
 ## The background-recalibration protocol (sans-io)
 
@@ -144,6 +181,14 @@ verification against the Python oracle.
   vectors and `serde_json`'s `preserve_order` feature.
 - Candidate orderings, tie-breaks, and float accumulation orders mirror the
   Python/numpy implementations (documented at each site).
+- The native `parallel` feature (rayon) splits only **independent output
+  rows** of the warp gather and NCC response — bit-exact by construction
+  and proven by the golden tests and the full oracle verify running with
+  the feature enabled. The `estimate_geometry` candidate loop shares one
+  sequential PCG32 and must never be parallelized.
+- New engine behaviors (tracking, color refinements, clear prediction,
+  extended output) all sit behind **default-off config flags**, so the
+  default path stays byte-identical to the verified oracle port.
 
 ## Why the CV layer is hand-written
 
@@ -182,7 +227,13 @@ mid-game on the reference fixture, on the development machine:
 | | per frame (p50) | throughput |
 |---|---|---|
 | Python engine | ~12.8 ms | ~78 fps |
-| Rust engine | **~3.4 ms** | **~290 fps** |
+| Rust engine (scalar) | ~3.6 ms | ~280 fps |
+| Rust engine (`parallel` row splits) | **~2.9 ms** | **~350 fps** |
+
+The `parallel` feature (on by default for the native binaries) runs the
+rectification gather and NCC response rows on the rayon pool; p99 drops
+from ~6.2 ms to ~4.6 ms. The continuous tracker adds ≈ 0.1 ms on stable
+sources (deadband path) and ≈ 0.8 ms while actually following motion.
 
 The remaining hot path is dominated by rectification (the precomputed gather)
 and the playfield read. Acquisition solves (full geometry estimation, run
