@@ -9,7 +9,7 @@ mod worker_glue;
 
 use std::sync::OnceLock;
 
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
+use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QQuickStyle, QString, QUrl};
 
 /// Optional source to open immediately: `nestris-qt-gui <source> [--start <s>]`.
 pub struct AutoStart {
@@ -40,11 +40,9 @@ fn parse_args() {
 fn main() {
     parse_args();
     // Hand-rolled retro design: the non-native Basic style keeps controls
-    // identical on every platform.
-    // SAFETY: before QGuiApplication::new and any thread spawns.
-    unsafe {
-        std::env::set_var("QT_QUICK_CONTROLS_STYLE", "Basic");
-    }
+    // identical on every platform (and native styles crash on customized
+    // control delegates).
+    QQuickStyle::set_style(&QString::from("Basic"));
 
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();

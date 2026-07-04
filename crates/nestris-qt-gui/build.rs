@@ -4,12 +4,19 @@ fn main() {
     let builder = CxxQtBuilder::new_qml_module(
         QmlModule::new("at.retroverse.nestris.core")
             .qml_files([
-                "qml/DashRow.qml",
+                "qml/HeightChart.qml",
                 "qml/Main.qml",
+                "qml/PBTable.qml",
+                "qml/PieceDistribution.qml",
                 "qml/PixelPanel.qml",
                 "qml/RetroButton.qml",
+                "qml/SettingsDialog.qml",
+                "qml/StatBreakdown.qml",
+                "qml/StatTile.qml",
                 "qml/Theme.qml",
+                "qml/Toasts.qml",
                 "qml/TransportBar.qml",
+                "qml/TrtChart.qml",
             ])
             .depend("QtQuick"),
     )

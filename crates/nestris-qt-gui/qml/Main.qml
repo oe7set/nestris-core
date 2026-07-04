@@ -19,6 +19,18 @@ ApplicationWindow {
         source: "qrc:/nestris/assets/fonts/PressStart2P-Regular.ttf"
     }
 
+    // Extended stats and PB tables arrive as JSON (throttled bridge props).
+    property var ext: {
+        try { return JSON.parse(AppBridge.extJson) } catch (e) { return {} }
+    }
+    property var pb: {
+        try { return JSON.parse(AppBridge.pbJson) } catch (e) { return {} }
+    }
+
+    function fmtOpt(v, pad) {
+        return v === null || v === undefined ? "—" : String(v).padStart(pad, "0")
+    }
+
     Connections {
         target: AppBridge
         function onFrameSerialChanged() {
@@ -46,12 +58,12 @@ ApplicationWindow {
         x: (root.width - width * scale) / 2
         y: (root.height - height * scale) / 2
 
-        // ---- header bar ----
+        // ================= header =================
         Row {
             id: header
             x: 64
             y: 24
-            spacing: 16
+            spacing: 14
 
             Text {
                 anchors.verticalCenter: parent.verticalCenter
@@ -73,7 +85,7 @@ ApplicationWindow {
             ComboBox {
                 id: deviceBox
                 visible: AppBridge.supportsCapture
-                width: 260
+                width: 230
                 height: 40
                 anchors.verticalCenter: parent.verticalCenter
                 model: AppBridge.devices
@@ -84,14 +96,15 @@ ApplicationWindow {
             }
 
             RetroButton {
-                label: AppBridge.running ? "⏹ STOP" : "▶ START"
+                label: AppBridge.running ? "■ STOP" : "▶ START"
                 accent: !AppBridge.running
                 onClicked: AppBridge.running ? AppBridge.stopSource() : AppBridge.startSource()
             }
             RetroButton { label: "RESET LOCK"; onClicked: AppBridge.resetLock() }
+            RetroButton { label: "⚙ SETTINGS"; onClicked: settingsDialog.open() }
         }
 
-        // ---- status cluster (right) ----
+        // ================= status cluster =================
         Row {
             x: design.width - 64 - width
             y: 36
@@ -129,8 +142,8 @@ ApplicationWindow {
 
         Text {
             x: 64
-            y: 78
-            width: 1400
+            y: 80
+            width: 1500
             visible: AppBridge.lastError.length > 0
             text: AppBridge.lastError
             color: theme.bad
@@ -139,25 +152,72 @@ ApplicationWindow {
             font.pixelSize: 12
         }
 
-        // ---- raw preview / source zone ----
+        // ================= left column =================
         PixelPanel {
             id: sourceZone
             x: 64
             y: 110
             width: 960
-            height: 660
+            height: 560
+
+            property bool showCanon: false
 
             RawFrameView {
                 id: rawView
                 anchors.fill: parent
                 anchors.margins: 8
+                visible: !sourceZone.showCanon
+            }
+
+            CanonFrameView {
+                id: canonView
+                anchors.fill: parent
+                anchors.margins: 8
+                visible: sourceZone.showCanon
+            }
+
+            // RAW / CANON switch.
+            Row {
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.margins: 10
+                spacing: 4
+                visible: AppBridge.running && !AppBridge.isReplay()
+
+                Repeater {
+                    model: [{ t: "RAW", c: false }, { t: "CANON", c: true }]
+
+                    Rectangle {
+                        required property var modelData
+                        width: chipText.implicitWidth + 14
+                        height: 24
+                        radius: 3
+                        color: "#c010141a"
+                        border.width: 2
+                        border.color: sourceZone.showCanon === modelData.c ? theme.accent : theme.panelEdge
+
+                        Text {
+                            id: chipText
+                            anchors.centerIn: parent
+                            text: parent.modelData.t
+                            color: sourceZone.showCanon === parent.modelData.c ? theme.accent : theme.dim
+                            font.family: pixelFont.name
+                            font.pixelSize: 9
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: sourceZone.showCanon = parent.modelData.c
+                        }
+                    }
+                }
             }
 
             // Idle drop zone / replay placeholder.
             Column {
                 anchors.centerIn: parent
                 spacing: 24
-                visible: !AppBridge.running || (AppBridge.isReplay() && AppBridge.running)
+                visible: !AppBridge.running || AppBridge.isReplay()
 
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -168,117 +228,19 @@ ApplicationWindow {
                 }
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    visible: !AppBridge.running
-                    text: "OR USE OPEN VIDEO / OPEN REPLAY ABOVE"
-                    color: theme.grid
-                    font.family: pixelFont.name
-                    font.pixelSize: 12
-                }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    visible: AppBridge.running && AppBridge.isReplay()
-                    text: "RECORDED GAME PLAYBACK — NO SOURCE VIDEO"
-                    color: theme.dim
+                    text: AppBridge.running && AppBridge.isReplay()
+                          ? "RECORDED GAME PLAYBACK — NO SOURCE VIDEO"
+                          : "OR USE OPEN VIDEO / OPEN REPLAY ABOVE"
+                    color: AppBridge.running ? theme.dim : theme.grid
                     font.family: pixelFont.name
                     font.pixelSize: 12
                 }
             }
-        }
 
-        // ---- canonical preview ----
-        PixelPanel {
-            x: 1056
-            y: 110
-            width: 400
-            height: 400
-            label: "CANONICAL"
-
-            CanonFrameView {
-                id: canonView
-                anchors.fill: parent
-                anchors.margins: 8
-                anchors.topMargin: 30
-            }
-        }
-
-        // ---- tracked playfield ----
-        PixelPanel {
-            x: 1488
-            y: 110
-            width: 250
-            height: 540
-            label: "FIELD"
-
-            PlayfieldView {
-                id: fieldView
-                anchors.fill: parent
-                anchors.margins: 8
-                anchors.topMargin: 30
-            }
-        }
-
-        // ---- NEXT box ----
-        PixelPanel {
-            x: 1770
-            y: 110
-            width: 86
-            height: 100
-            label: "NEXT"
-
-            Text {
-                anchors.centerIn: parent
-                anchors.verticalCenterOffset: 10
-                text: AppBridge.nextPiece
-                color: theme.text
-                opacity: AppBridge.confNext < 0.4 ? 0.35 : 1.0
-                font.family: pixelFont.name
-                font.pixelSize: 34
-            }
-        }
-
-        // ---- game-state banner + dashboard values ----
-        PixelPanel {
-            x: 1056
-            y: 540
-            width: 400
-            height: 400
-
-            Column {
-                anchors.fill: parent
-                anchors.margins: 16
-                spacing: 10
-
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: AppBridge.gameState.length > 0 ? AppBridge.gameState : "NO SOURCE"
-                    color: AppBridge.gameState === "IN GAME" ? theme.good
-                         : AppBridge.gameState === "GAME OVER" ? theme.bad
-                         : AppBridge.gameState === "PAUSED" ? theme.warn : theme.dim
-                    font.family: pixelFont.name
-                    font.pixelSize: 18
-                }
-
-                Rectangle { width: parent.width; height: 2; color: theme.grid }
-
-                DashRow { label: "SCORE"; value: AppBridge.score < 0 ? "—" : String(AppBridge.score).padStart(7, "0"); conf: AppBridge.confScore }
-                DashRow { label: "LINES"; value: AppBridge.lines < 0 ? "—" : String(AppBridge.lines).padStart(3, "0"); conf: AppBridge.confLines }
-                DashRow { label: "LEVEL"; value: AppBridge.level < 0 ? "—" : String(AppBridge.level).padStart(2, "0"); conf: AppBridge.confLevel }
-                DashRow { label: "PIECES"; value: String(AppBridge.pieces) }
-                DashRow { label: "TRT"; value: AppBridge.tetrisRate < 0 ? "—" : (AppBridge.tetrisRate * 100).toFixed(0) + "%"; gold: true }
-                DashRow { label: "PPS"; value: AppBridge.pps < 0 ? "—" : AppBridge.pps.toFixed(2) }
-                DashRow { label: "BURN"; value: String(AppBridge.burn) }
-                DashRow { label: "DROUGHT"; value: String(AppBridge.drought) }
-                DashRow {
-                    label: "CLEARS"
-                    value: AppBridge.clearsSingle + "/" + AppBridge.clearsDouble + "/"
-                         + AppBridge.clearsTriple + "/" + AppBridge.clearsTetris
-                }
-            }
-
-            // ⚠ CHECK CAPTURE alarm overlay
+            // ⚠ CHECK CAPTURE alarm.
             Rectangle {
                 anchors.fill: parent
-                color: "#c0100404"
+                color: "#a0100404"
                 visible: AppBridge.alarm
                 radius: 4
 
@@ -287,20 +249,26 @@ ApplicationWindow {
                     text: "⚠ CHECK CAPTURE"
                     color: theme.bad
                     font.family: pixelFont.name
-                    font.pixelSize: 22
+                    font.pixelSize: 26
                 }
             }
         }
 
-        // ---- transport ----
+        HeightChart {
+            x: 64
+            y: 682
+            width: 960
+            height: 96
+            timeline: root.ext.height_timeline || []
+        }
+
         TransportBar {
             x: 64
-            y: 786
+            y: 790
             width: 960
             height: 40
         }
 
-        // ---- event stream ----
         PixelPanel {
             x: 64
             y: 844
@@ -325,6 +293,252 @@ ApplicationWindow {
                 }
             }
         }
+
+        // ================= middle column: tiles =================
+        Rectangle {
+            x: 1056
+            y: 110
+            width: 400
+            height: 40
+            radius: 4
+            color: "#10141a"
+            border.width: 2
+            border.color: AppBridge.gameState === "IN GAME" ? theme.good
+                        : AppBridge.gameState === "GAME OVER" ? theme.bad
+                        : AppBridge.gameState === "PAUSED" ? theme.warn : theme.panelEdge
+
+            Text {
+                anchors.centerIn: parent
+                text: AppBridge.gameState.length > 0 ? AppBridge.gameState : "NO SOURCE"
+                color: AppBridge.gameState === "IN GAME" ? theme.good
+                     : AppBridge.gameState === "GAME OVER" ? theme.bad
+                     : AppBridge.gameState === "PAUSED" ? theme.warn : theme.dim
+                font.family: pixelFont.name
+                font.pixelSize: 16
+            }
+        }
+
+        StatTile {
+            x: 1056
+            y: 158
+            width: 400
+            height: 64
+            label: "SCORE"
+            valueSize: 26
+            value: AppBridge.score < 0 ? "—" : String(AppBridge.score).padStart(7, "0")
+            conf: AppBridge.confScore
+        }
+
+        Grid {
+            x: 1056
+            y: 230
+            columns: 2
+            columnSpacing: 12
+            rowSpacing: 8
+
+            StatTile {
+                width: 194; height: 56
+                label: "PACE"
+                value: root.ext.pace_score === null || root.ext.pace_score === undefined
+                       ? "—" : String(root.ext.pace_score).padStart(7, "0")
+            }
+            StatTile {
+                width: 194; height: 56
+                label: "LINES"
+                value: AppBridge.lines < 0 ? "—" : String(AppBridge.lines).padStart(3, "0")
+                conf: AppBridge.confLines
+            }
+            StatTile {
+                width: 194; height: 56
+                label: "LEVEL"
+                value: AppBridge.level < 0 ? "—" : String(AppBridge.level).padStart(2, "0")
+                conf: AppBridge.confLevel
+            }
+            StatTile {
+                width: 194; height: 56
+                label: "EFF"
+                // Clear points per line; 300 = tetris-only.
+                value: root.ext.efficiency === null || root.ext.efficiency === undefined
+                       ? "—" : root.ext.efficiency.toFixed(0)
+            }
+            StatTile {
+                width: 194; height: 56
+                label: "BRN"
+                value: String(AppBridge.burn)
+            }
+            StatTile {
+                width: 194; height: 56
+                label: "TRT"
+                gold: true
+                value: AppBridge.tetrisRate < 0 ? "—" : (AppBridge.tetrisRate * 100).toFixed(0) + "%"
+            }
+            StatTile {
+                width: 194; height: 56
+                label: "I-DRT"
+                valueSize: 13
+                alert: (root.ext.i_drought ? root.ext.i_drought.current : 0) >= 13
+                value: root.ext.i_drought
+                       ? root.ext.i_drought.current + "/" + root.ext.i_drought.last + "/" + root.ext.i_drought.max
+                       : "—"
+            }
+            StatTile {
+                width: 194; height: 56
+                label: "PIECES"
+                value: String(AppBridge.pieces)
+            }
+            StatTile {
+                width: 194; height: 56
+                label: "PPS"
+                value: AppBridge.pps < 0 ? "—" : AppBridge.pps.toFixed(2)
+            }
+            StatTile {
+                width: 194; height: 56
+                label: "DROUGHT"
+                alert: AppBridge.drought >= 13
+                value: String(AppBridge.drought)
+            }
+        }
+
+        StatBreakdown {
+            x: 1056
+            y: 560
+            width: 400
+            height: 168
+            title: "LINES"
+            rows: {
+                var L = Math.max(AppBridge.lines, 0)
+                function pct(n) { return L > 0 ? Math.round(n / L * 100) + "%" : "" }
+                return [
+                    { k: "SINGLES", v: String(AppBridge.clearsSingle), p: pct(AppBridge.clearsSingle) },
+                    { k: "DOUBLES", v: String(AppBridge.clearsDouble), p: pct(AppBridge.clearsDouble * 2) },
+                    { k: "TRIPLES", v: String(AppBridge.clearsTriple), p: pct(AppBridge.clearsTriple * 3) },
+                    { k: "TETRIS", v: String(AppBridge.clearsTetris), p: pct(AppBridge.clearsTetris * 4), gold: true }
+                ]
+            }
+        }
+
+        StatBreakdown {
+            x: 1056
+            y: 736
+            width: 400
+            height: 192
+            title: "POINTS"
+            rows: {
+                var p = root.ext.points || {}
+                var S = Math.max(AppBridge.score, 0)
+                function pct(n) { return S > 0 && n !== undefined ? Math.round(n / S * 100) + "%" : "" }
+                function v(n) { return n === undefined ? "—" : String(n) }
+                return [
+                    { k: "DROPS", v: v(p.drops), p: pct(p.drops) },
+                    { k: "SINGLES", v: v(p.singles), p: pct(p.singles) },
+                    { k: "DOUBLES", v: v(p.doubles), p: pct(p.doubles) },
+                    { k: "TRIPLES", v: v(p.triples), p: pct(p.triples) },
+                    { k: "TETRISES", v: v(p.tetrises), p: pct(p.tetrises), gold: true }
+                ]
+            }
+        }
+
+        StatBreakdown {
+            x: 1056
+            y: 936
+            width: 400
+            height: 120
+            title: "BOARD"
+            rows: {
+                var b = root.ext.board || {}
+                var state = (b.tetris_ready ? "READY " : "") + (b.double_well ? "WELL " : "")
+                          + (b.clean_slope ? "SLOPE" : "")
+                return [
+                    { k: "MAX HEIGHT", v: b.max_height === undefined ? "—" : String(b.max_height), p: "" },
+                    { k: "HOLES", v: b.holes === undefined ? "—" : String(b.holes), p: "" },
+                    { k: "STATE", v: state.length > 0 ? state : "—", p: "", gold: b.tetris_ready === true }
+                ]
+            }
+        }
+
+        // ================= right column =================
+        PixelPanel {
+            x: 1488
+            y: 110
+            width: 244
+            height: 470
+            label: "FIELD"
+
+            PlayfieldView {
+                id: fieldView
+                anchors.fill: parent
+                anchors.margins: 10
+                anchors.topMargin: 30
+            }
+        }
+
+        PixelPanel {
+            x: 1744
+            y: 110
+            width: 112
+            height: 100
+            label: "NEXT"
+
+            Text {
+                anchors.centerIn: parent
+                anchors.verticalCenterOffset: 10
+                text: AppBridge.nextPiece
+                color: theme.text
+                opacity: AppBridge.confNext < 0.4 ? 0.35 : 1.0
+                font.family: pixelFont.name
+                font.pixelSize: 34
+            }
+        }
+
+        PieceDistribution {
+            x: 1488
+            y: 592
+            width: 368
+            height: 208
+            counts: root.ext.piece_dist ? root.ext.piece_dist.counts : []
+            droughts: root.ext.piece_dist ? root.ext.piece_dist.drought : []
+            deviation: root.ext.piece_dist ? root.ext.piece_dist.deviation : 0
+        }
+
+        TrtChart {
+            x: 1488
+            y: 812
+            width: 368
+            height: 108
+            trend: root.ext.trt_trend || []
+        }
+
+        PBTable {
+            x: 1488
+            y: 936
+            width: 178
+            height: 120
+            title: "TODAY"
+            rows: root.pb.today || []
+        }
+
+        PBTable {
+            x: 1678
+            y: 936
+            width: 178
+            height: 120
+            title: "OVERALL"
+            rows: root.pb.overall || []
+        }
+
+        SettingsDialog {
+            id: settingsDialog
+            parent: design
+            x: (design.width - width) / 2
+            y: 70
+        }
+    }
+
+    Toasts {
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.margins: 18
+        z: 100
     }
 
     // ---- keyboard shortcuts (mirror the egui GUI) ----

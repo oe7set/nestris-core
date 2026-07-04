@@ -5,11 +5,13 @@
 use core::pin::Pin;
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QString, QStringList, QUrl};
 use nestris_engine::enums::GameState;
+use nestris_gui_core::game_end::GameEndTracker;
+use nestris_gui_core::session::SessionStore;
 use nestris_gui_core::settings::GuiSettings;
 use nestris_gui_core::worker::{self, Cmd, GuiUpdate, WorkerMsg};
 use nestris_host::capture_ffmpeg;
@@ -22,6 +24,10 @@ pub const SETTINGS_FILE: &str = "qt-gui-settings.toml";
 /// Below this confidence a dashboard value renders grayed out.
 /// (Mirrors the egui GUI's `STALE_CONFIDENCE`; exposed to QML as-is.)
 const ALARM_AFTER_S: f64 = 2.0;
+
+/// Chart series (extJson) are throttled to this interval — the QML
+/// canvases reparse on change, which is too costly at 60 Hz.
+const EXT_PUSH_INTERVAL: Duration = Duration::from_millis(200);
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -83,6 +89,10 @@ pub mod qobject {
         #[qproperty(f64, conf_level, cxx_name = "confLevel")]
         #[qproperty(f64, conf_next, cxx_name = "confNext")]
         #[qproperty(f64, conf_overall, cxx_name = "confOverall")]
+        // Extended stats (serialized ExtendedStats, ~5 Hz) and PB tables
+        // ({"today": [...], "overall": [...]}, refreshed on game end).
+        #[qproperty(QString, ext_json, cxx_name = "extJson")]
+        #[qproperty(QString, pb_json, cxx_name = "pbJson")]
         type AppBridge = super::AppBridgeRust;
 
         // ---- signals ----
@@ -166,6 +176,22 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "isReplay"]
         fn is_replay(self: &Self) -> bool;
+
+        /// Current persisted settings as JSON (for the settings dialog).
+        #[qinvokable]
+        #[cxx_name = "settingsJson"]
+        fn settings_json(self: &Self) -> QString;
+
+        /// Parse, persist, and apply settings; restarts a running
+        /// pipeline at the current position. Returns an error text or "".
+        #[qinvokable]
+        #[cxx_name = "applySettings"]
+        fn apply_settings(self: Pin<&mut Self>, json: &QString) -> QString;
+
+        /// Reset the engine config to GUI defaults; returns the new JSON.
+        #[qinvokable]
+        #[cxx_name = "resetSettings"]
+        fn reset_settings(self: Pin<&mut Self>) -> QString;
     }
 
     impl cxx_qt::Threading for AppBridge {}
@@ -210,6 +236,8 @@ pub struct AppBridgeRust {
     conf_level: f64,
     conf_next: f64,
     conf_overall: f64,
+    ext_json: QString,
+    pb_json: QString,
     // Non-property state.
     settings: GuiSettings,
     cmd: Option<Sender<Cmd>>,
@@ -218,11 +246,18 @@ pub struct AppBridgeRust {
     generation: u64,
     /// When the lock first left LOCKED (for the CHECK CAPTURE alarm).
     unhealthy_since: Option<Instant>,
+    /// Persistent per-game PB store (shared with the egui GUI).
+    session: SessionStore,
+    /// Game-end detection for the PB tables.
+    game_end: GameEndTracker,
+    /// Last time extJson was pushed (chart throttle).
+    last_ext_push: Option<Instant>,
 }
 
 impl Default for AppBridgeRust {
     fn default() -> Self {
         let settings = GuiSettings::load_from(SETTINGS_FILE);
+        let session = SessionStore::load();
         Self {
             running: false,
             live: false,
@@ -260,11 +295,16 @@ impl Default for AppBridgeRust {
             conf_level: 1.0,
             conf_next: 1.0,
             conf_overall: 1.0,
+            ext_json: QString::from("{}"),
+            pb_json: QString::from(&pb_tables_json(&session)),
             settings,
             cmd: None,
             join: None,
             generation: 0,
             unhealthy_since: None,
+            session,
+            game_end: GameEndTracker::default(),
+            last_ext_push: None,
         }
     }
 }
@@ -366,6 +406,8 @@ impl qobject::AppBridge {
             rust.settings.save_to(SETTINGS_FILE);
             rust.generation += 1;
             rust.unhealthy_since = None;
+            rust.game_end = GameEndTracker::default();
+            rust.last_ext_push = None;
             (
                 rust.settings.engine.clone(),
                 rust.settings.sink_options(),
@@ -491,6 +533,46 @@ impl qobject::AppBridge {
         worker::is_replay_path(&self.source().to_string())
     }
 
+    // ---- settings dialog ----
+
+    pub fn settings_json(&self) -> QString {
+        QString::from(&serde_json::to_string(&self.rust().settings).unwrap_or_else(|_| "{}".into()))
+    }
+
+    pub fn apply_settings(mut self: Pin<&mut Self>, json: &QString) -> QString {
+        let parsed: Result<GuiSettings, _> = serde_json::from_str(&json.to_string());
+        match parsed {
+            Ok(mut settings) => {
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    // Source and speed are owned by the transport, not the
+                    // dialog: keep the live values.
+                    settings.last_source = rust.settings.last_source.clone();
+                    settings.speed = rust.settings.speed;
+                    rust.settings = settings;
+                    rust.settings.save_to(SETTINGS_FILE);
+                }
+                if *self.running() {
+                    let position = *self.position_s();
+                    self.as_mut().set_buffering(true);
+                    self.as_mut().start_source_at(position);
+                }
+                QString::from("")
+            }
+            Err(err) => QString::from(&format!("Invalid settings: {err}")),
+        }
+    }
+
+    pub fn reset_settings(mut self: Pin<&mut Self>) -> QString {
+        {
+            let mut rust = self.as_mut().rust_mut();
+            // Same semantics as the egui dialog: reset the engine knobs
+            // (GUI default keeps tracking on), leave sinks/paths alone.
+            rust.settings.engine = GuiSettings::default().engine;
+        }
+        self.settings_json()
+    }
+
     // ---- worker messages (queued from the forwarder thread) ----
 
     pub(crate) fn handle_worker_msg(mut self: Pin<&mut Self>, msg: WorkerMsg, generation: u64) {
@@ -572,6 +654,38 @@ impl qobject::AppBridge {
                 .event_added(QString::from(&row.text), QString::from(&row.severity));
         }
 
+        // Finished game → session PB store (shared with the egui GUI).
+        let record = self
+            .as_mut()
+            .rust_mut()
+            .game_end
+            .update(&update.output, update.position_s);
+        if let Some(record) = record {
+            let score = record.score;
+            let pb_json = {
+                let mut rust = self.as_mut().rust_mut();
+                rust.session.push(record);
+                pb_tables_json(&rust.session)
+            };
+            self.as_mut().set_pb_json(QString::from(&pb_json));
+            self.as_mut().toast(
+                QString::from("info"),
+                QString::from(&format!("Game over — {score} points recorded")),
+            );
+        }
+
+        // Extended stats for the tiles and charts (throttled).
+        let due = self
+            .rust()
+            .last_ext_push
+            .is_none_or(|t| t.elapsed() >= EXT_PUSH_INTERVAL);
+        if due {
+            self.as_mut().rust_mut().last_ext_push = Some(Instant::now());
+            if let Ok(json) = serde_json::to_string(&update.ext) {
+                self.as_mut().set_ext_json(QString::from(&json));
+            }
+        }
+
         // Scalar dashboard values.
         let output = &update.output;
         let fields = &output.fields;
@@ -651,6 +765,16 @@ impl qobject::AppBridge {
         let serial = self.frame_serial().wrapping_add(1);
         self.as_mut().set_frame_serial(serial);
     }
+}
+
+/// PB tables for QML: `{"today": [...], "overall": [...]}` (top 5 each).
+fn pb_tables_json(session: &SessionStore) -> String {
+    let (today, _) = nestris_gui_core::session::local_stamp();
+    serde_json::json!({
+        "today": session.best(Some(&today), 5),
+        "overall": session.best(None, 5),
+    })
+    .to_string()
 }
 
 /// Display label for the game-state banner.
