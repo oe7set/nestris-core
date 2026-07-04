@@ -11,7 +11,7 @@ name = "nestris"
 path = "src/main.rs"
 
 [dependencies]
-nestris-engine = { workspace = true }
+nestris-engine = { workspace = true, features = ["parallel"] }
 nestris-host = { workspace = true }
 nestris-ngf = { workspace = true }
 anyhow = { workspace = true }

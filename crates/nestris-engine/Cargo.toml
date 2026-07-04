@@ -15,9 +15,9 @@ png = { workspace = true }
 
 [features]
 default = []
-# Native-only data parallelism for per-cell / per-digit work; must stay off
-# for wasm builds.
-parallel = ["dep:rayon"]
+# Native-only data parallelism (warp/NCC row splits in nestris-vision);
+# bit-exact, but must stay off for wasm builds.
+parallel = ["dep:rayon", "nestris-vision/parallel"]
 
 [dependencies.rayon]
 version = "1"

@@ -171,14 +171,34 @@ impl WarpMap {
     }
 
     /// Warp into `out` (must be `out_w × out_h` with `src.channels`).
+    /// With the `parallel` feature the output rows are computed on the
+    /// rayon pool — a bit-exact split (each row is an independent pure
+    /// function of the map and the source).
     pub fn apply_into(&self, src: &Image, out: &mut Image) {
         debug_assert_eq!(out.width, self.out_w);
         debug_assert_eq!(out.height, self.out_h);
         debug_assert_eq!(out.channels, src.channels);
-        let mut px = vec![0u8; src.channels];
-        for (i, &(sx, sy, frac)) in self.entries.iter().enumerate() {
-            sample_fixed(src, sx as i64, sy as i64, frac as usize, &mut px);
-            out.data[i * src.channels..(i + 1) * src.channels].copy_from_slice(&px);
+        let ch = src.channels;
+        let row_len = self.out_w * ch;
+        let process_row = |entries: &[(i32, i32, u16)], out_row: &mut [u8]| {
+            let mut px = vec![0u8; ch];
+            for (k, &(sx, sy, frac)) in entries.iter().enumerate() {
+                sample_fixed(src, sx as i64, sy as i64, frac as usize, &mut px);
+                out_row[k * ch..(k + 1) * ch].copy_from_slice(&px);
+            }
+        };
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            self.entries
+                .par_chunks(self.out_w)
+                .zip(out.data.par_chunks_mut(row_len))
+                .for_each(|(entries, out_row)| process_row(entries, out_row));
+        }
+        #[cfg(not(feature = "parallel"))]
+        for (entries, out_row) in self.entries.chunks(self.out_w).zip(out.data.chunks_mut(row_len))
+        {
+            process_row(entries, out_row);
         }
     }
 

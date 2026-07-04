@@ -7,6 +7,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rayon = { version = "1", optional = true }
+
+[features]
+# Native-only row-parallelism for the warp/NCC hot paths. The splits are
+# bit-exact (independent output rows, integer-exact math), which the
+# oracle verification gates prove. Must stay off for wasm builds.
+parallel = ["dep:rayon"]
 
 [dev-dependencies]
 png = { workspace = true }

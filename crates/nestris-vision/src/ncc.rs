@@ -81,7 +81,9 @@ pub fn match_template_ccoeff_normed(image: &Image, templ: &Image) -> ResponseMap
     let out_w = iw - tw + 1;
     let out_h = ih - th + 1;
     let mut out = vec![0.0f32; out_w * out_h];
-    for oy in 0..out_h {
+    // Each response row is an independent pure function of the inputs, so
+    // the `parallel` row split is bit-exact.
+    let compute_row = |oy: usize, out_row: &mut [f32]| {
         for ox in 0..out_w {
             // Cross term: exact integer dot product (row-wise u32, safe for
             // widths < 66k px at max u8 values).
@@ -107,8 +109,19 @@ pub fn match_template_ccoeff_normed(image: &Image, templ: &Image) -> ResponseMap
             } else {
                 0.0
             };
-            out[oy * out_w + ox] = v as f32;
+            out_row[ox] = v as f32;
         }
+    };
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        out.par_chunks_mut(out_w)
+            .enumerate()
+            .for_each(|(oy, row)| compute_row(oy, row));
+    }
+    #[cfg(not(feature = "parallel"))]
+    for (oy, row) in out.chunks_mut(out_w).enumerate() {
+        compute_row(oy, row);
     }
     ResponseMap {
         data: out,
