@@ -65,12 +65,13 @@ fn fold(op: Op, a: u8, b: u8) -> u8 {
 
 /// Horizontal running min/max with window radius `r` (window clamped to the
 /// image, which equals OpenCV's constant ±∞ border: outside taps never win).
+/// Output rows are independent pure functions of the source, so the row
+/// split under the `parallel` feature is bit-exact.
 fn pass_h(src: &Image, r: usize, op: Op) -> Image {
     let (w, h) = (src.width, src.height);
     let mut out = Image::new(w, h, 1);
-    for y in 0..h {
+    let row_fn = |y: usize, dst: &mut [u8]| {
         let row = &src.data[y * w..(y + 1) * w];
-        let dst = &mut out.data[y * w..(y + 1) * w];
         for (x, d) in dst.iter_mut().enumerate() {
             let x0 = x.saturating_sub(r);
             let x1 = (x + r + 1).min(w);
@@ -80,18 +81,31 @@ fn pass_h(src: &Image, r: usize, op: Op) -> Image {
             }
             *d = acc;
         }
+    };
+    #[cfg(feature = "parallel")]
+    if w * h >= crate::PAR_MIN_PIXELS {
+        use rayon::prelude::*;
+        out.data
+            .par_chunks_mut(w)
+            .enumerate()
+            .for_each(|(y, dst)| row_fn(y, dst));
+        return out;
+    }
+    for y in 0..h {
+        let dst = &mut out.data[y * w..(y + 1) * w];
+        row_fn(y, dst);
     }
     out
 }
 
-/// Vertical running min/max with window radius `r`.
+/// Vertical running min/max with window radius `r` (row-parallel like
+/// [`pass_h`]: each output row folds a fixed source-row window).
 fn pass_v(src: &Image, r: usize, op: Op) -> Image {
     let (w, h) = (src.width, src.height);
     let mut out = Image::new(w, h, 1);
-    for y in 0..h {
+    let row_fn = |y: usize, dst: &mut [u8]| {
         let y0 = y.saturating_sub(r);
         let y1 = (y + r + 1).min(h);
-        let dst = &mut out.data[y * w..(y + 1) * w];
         dst.copy_from_slice(&src.data[y0 * w..(y0 + 1) * w]);
         for yy in y0 + 1..y1 {
             let row = &src.data[yy * w..(yy + 1) * w];
@@ -99,13 +113,40 @@ fn pass_v(src: &Image, r: usize, op: Op) -> Image {
                 *d = fold(op, *d, v);
             }
         }
+    };
+    #[cfg(feature = "parallel")]
+    if w * h >= crate::PAR_MIN_PIXELS {
+        use rayon::prelude::*;
+        out.data
+            .par_chunks_mut(w)
+            .enumerate()
+            .for_each(|(y, dst)| row_fn(y, dst));
+        return out;
+    }
+    for y in 0..h {
+        let dst = &mut out.data[y * w..(y + 1) * w];
+        row_fn(y, dst);
     }
     out
 }
 
 /// Elementwise min/max of two equal-size images.
 fn combine(a: &Image, b: &Image, op: Op) -> Image {
-    let mut out = Image::new(a.width, a.height, 1);
+    let (w, h) = (a.width, a.height);
+    let mut out = Image::new(w, h, 1);
+    #[cfg(feature = "parallel")]
+    if w * h >= crate::PAR_MIN_PIXELS {
+        use rayon::prelude::*;
+        out.data
+            .par_chunks_mut(w)
+            .zip(a.data.par_chunks(w).zip(b.data.par_chunks(w)))
+            .for_each(|(d_row, (a_row, b_row))| {
+                for ((d, &x), &y) in d_row.iter_mut().zip(a_row).zip(b_row) {
+                    *d = fold(op, x, y);
+                }
+            });
+        return out;
+    }
     for ((d, &x), &y) in out.data.iter_mut().zip(a.data.iter()).zip(b.data.iter()) {
         *d = fold(op, x, y);
     }

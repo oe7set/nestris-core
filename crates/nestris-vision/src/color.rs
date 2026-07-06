@@ -29,7 +29,22 @@ pub fn bgr_pixel_to_gray(b: u8, g: u8, r: u8) -> u8 {
 /// BGR image to single-channel luma.
 pub fn bgr_to_gray(src: &Image) -> Image {
     assert_eq!(src.channels, 3);
-    let mut out = Image::new(src.width, src.height, 1);
+    let (w, h) = (src.width, src.height);
+    let mut out = Image::new(w, h, 1);
+    // Pure per-pixel map: the row split under `parallel` is bit-exact.
+    #[cfg(feature = "parallel")]
+    if w * h >= crate::PAR_MIN_PIXELS {
+        use rayon::prelude::*;
+        out.data
+            .par_chunks_mut(w)
+            .zip(src.data.par_chunks(w * 3))
+            .for_each(|(dst_row, src_row)| {
+                for (dst, px) in dst_row.iter_mut().zip(src_row.chunks_exact(3)) {
+                    *dst = bgr_pixel_to_gray(px[0], px[1], px[2]);
+                }
+            });
+        return out;
+    }
     for (dst, px) in out.data.iter_mut().zip(src.data.chunks_exact(3)) {
         *dst = bgr_pixel_to_gray(px[0], px[1], px[2]);
     }

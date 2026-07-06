@@ -41,6 +41,31 @@ impl Labeled {
         }
         pts
     }
+
+    /// Pixel coordinates for a selected subset of components, collected in
+    /// ONE pass over the label image instead of one full scan per component.
+    /// Per-component point order matches [`Labeled::component_points`]
+    /// (row-major scan order), so downstream consumers are byte-identical.
+    pub fn component_points_multi(&self, indices: &[usize]) -> Vec<Vec<(u32, u32)>> {
+        // Label value -> output slot + 1 (0 = not requested).
+        let mut slot = vec![0u32; self.components.len() + 1];
+        for (out_i, &idx) in indices.iter().enumerate() {
+            slot[idx + 1] = out_i as u32 + 1;
+        }
+        let mut out: Vec<Vec<(u32, u32)>> = indices
+            .iter()
+            .map(|&idx| Vec::with_capacity(self.components[idx].area as usize))
+            .collect();
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let s = slot[self.labels[y * self.width + x] as usize];
+                if s != 0 {
+                    out[(s - 1) as usize].push((x as u32, y as u32));
+                }
+            }
+        }
+        out
+    }
 }
 
 struct UnionFind {

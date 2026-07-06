@@ -26,3 +26,10 @@ pub mod undistort;
 pub mod warp;
 
 pub use image::Image;
+
+/// Minimum pixel count before row-parallel kernels engage under the
+/// `parallel` feature. Purely a size-based dispatch (deterministic), so
+/// serial and parallel paths stay byte-identical; small images (canonical
+/// 256×240 crops, next-piece boxes) skip the rayon overhead.
+#[cfg(feature = "parallel")]
+pub(crate) const PAR_MIN_PIXELS: usize = 1 << 17;

@@ -44,7 +44,32 @@ pub fn otsu_threshold(src: &Image) -> f64 {
     max_val
 }
 
-/// `cv2.threshold(src, 0, max_value, THRESH_BINARY | THRESH_OTSU)`:
+/// Binary mask of pixels strictly below `thresh` (`1` where `src < thresh`).
+/// Pure per-pixel map; the row split under `parallel` is bit-exact.
+pub fn binary_lt(src: &Image, thresh: u8) -> Image {
+    assert_eq!(src.channels, 1);
+    let (w, h) = (src.width, src.height);
+    let mut out = Image::new(w, h, 1);
+    #[cfg(feature = "parallel")]
+    if w * h >= crate::PAR_MIN_PIXELS {
+        use rayon::prelude::*;
+        out.data
+            .par_chunks_mut(w)
+            .zip(src.data.par_chunks(w))
+            .for_each(|(dst_row, src_row)| {
+                for (dst, &v) in dst_row.iter_mut().zip(src_row) {
+                    *dst = u8::from(v < thresh);
+                }
+            });
+        return out;
+    }
+    for (dst, &v) in out.data.iter_mut().zip(src.data.iter()) {
+        *dst = u8::from(v < thresh);
+    }
+    out
+}
+
+/// `cv2.threshold(src, 0, max_value, THRESH_BINARY + THRESH_OTSU)`:
 /// returns `(threshold, binary)` where `binary = src > threshold ? max_value : 0`.
 pub fn threshold_binary_otsu(src: &Image, max_value: u8) -> (f64, Image) {
     let thresh = otsu_threshold(src);

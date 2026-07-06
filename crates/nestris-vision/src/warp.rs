@@ -122,17 +122,37 @@ pub fn remap_bilinear(
 ) -> Image {
     assert_eq!(map_x.len(), out_w * out_h);
     assert_eq!(map_y.len(), out_w * out_h);
-    let mut out = Image::new(out_w, out_h, src.channels);
-    let mut px = vec![0u8; src.channels];
-    for i in 0..out_w * out_h {
-        let xi = (map_x[i] as f64 * INTER_TAB_SIZE as f64).round_ties_even() as i64;
-        let yi = (map_y[i] as f64 * INTER_TAB_SIZE as f64).round_ties_even() as i64;
-        let sx = xi >> INTER_BITS;
-        let sy = yi >> INTER_BITS;
-        let frac = (((yi & (INTER_TAB_SIZE as i64 - 1)) << INTER_BITS)
-            + (xi & (INTER_TAB_SIZE as i64 - 1))) as usize;
-        sample_fixed(src, sx, sy, frac, &mut px);
-        out.data[i * src.channels..(i + 1) * src.channels].copy_from_slice(&px);
+    let ch = src.channels;
+    let mut out = Image::new(out_w, out_h, ch);
+    // Each output row is an independent pure function of the maps and the
+    // source, so the row split under the `parallel` feature is bit-exact
+    // (the undistort pre-pass runs this on full frames).
+    let row_fn = |y: usize, out_row: &mut [u8]| {
+        let mut px = vec![0u8; ch];
+        for dx in 0..out_w {
+            let i = y * out_w + dx;
+            let xi = (map_x[i] as f64 * INTER_TAB_SIZE as f64).round_ties_even() as i64;
+            let yi = (map_y[i] as f64 * INTER_TAB_SIZE as f64).round_ties_even() as i64;
+            let sx = xi >> INTER_BITS;
+            let sy = yi >> INTER_BITS;
+            let frac = (((yi & (INTER_TAB_SIZE as i64 - 1)) << INTER_BITS)
+                + (xi & (INTER_TAB_SIZE as i64 - 1))) as usize;
+            sample_fixed(src, sx, sy, frac, &mut px);
+            out_row[dx * ch..(dx + 1) * ch].copy_from_slice(&px);
+        }
+    };
+    #[cfg(feature = "parallel")]
+    if out_w * out_h >= crate::PAR_MIN_PIXELS {
+        use rayon::prelude::*;
+        out.data
+            .par_chunks_mut(out_w * ch)
+            .enumerate()
+            .for_each(|(y, out_row)| row_fn(y, out_row));
+        return out;
+    }
+    for y in 0..out_h {
+        let out_row = &mut out.data[y * out_w * ch..(y + 1) * out_w * ch];
+        row_fn(y, out_row);
     }
     out
 }
