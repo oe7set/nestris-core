@@ -12,5 +12,8 @@ nestris-vision = { workspace = true }
 nestris-ngf = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+# Dedicated half-size pool for background solves so their row-parallel
+# kernels never queue-contend with the pipeline thread's global-pool work.
+rayon = "1"
 tungstenite = "0.28"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

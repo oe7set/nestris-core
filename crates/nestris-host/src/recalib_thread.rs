@@ -9,7 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use nestris_engine::frame::Frame;
-use nestris_engine::geometry_cal::calibration::{GeometryResult, estimate_geometry};
+use nestris_engine::geometry_cal::calibration::{
+    GeometryResult, SolveOptions, estimate_geometry_with,
+};
+use nestris_engine::geometry_cal::lock::LockState;
 use nestris_engine::layout::get_layout;
 use nestris_engine::processor::FrameProcessor;
 use nestris_vision::Image;
@@ -20,6 +23,8 @@ struct Snapshot {
     image: Image,
     seq: i64,
     undistort: Option<Arc<nestris_vision::undistort::UndistortMap>>,
+    try_undistort: bool,
+    opts: SolveOptions,
 }
 
 pub struct RecalibThread {
@@ -38,20 +43,40 @@ impl RecalibThread {
         let worker_latest = latest.clone();
         let worker_stop = stop.clone();
         let handle = std::thread::spawn(move || {
+            // Solves run on a dedicated half-size rayon pool: their
+            // row-parallel kernels must not queue behind (or ahead of) the
+            // pipeline thread's own global-pool work (warp/NCC splits), which
+            // would inflate per-frame latency whenever a solve is in flight.
+            let threads = std::thread::available_parallelism()
+                .map(|n| (n.get() / 2).max(1))
+                .unwrap_or(1);
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .ok();
             while !worker_stop.load(Ordering::Relaxed) {
                 let snapshot = worker_latest.lock().unwrap().take();
                 let Some(snapshot) = snapshot else {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 };
-                let result = estimate_geometry(
-                    &snapshot.image,
-                    get_layout(),
-                    snapshot.undistort.clone(),
-                    snapshot.undistort.is_none(),
-                    snapshot.seq as u64,
-                );
-                if result.ok() && tx.send(result).is_err() {
+                let solve = || {
+                    estimate_geometry_with(
+                        &snapshot.image,
+                        get_layout(),
+                        snapshot.undistort.clone(),
+                        snapshot.try_undistort,
+                        snapshot.seq as u64,
+                        &snapshot.opts,
+                    )
+                };
+                let result = match &pool {
+                    Some(pool) => pool.install(solve),
+                    None => solve(),
+                };
+                // Failed solves must flow too: background acquisition resets
+                // its streak on them (maintenance mode ignores them anyway).
+                if tx.send(result).is_err() {
                     break;
                 }
             }
@@ -84,10 +109,21 @@ impl RecalibThread {
             return;
         }
         self.last_submit_ts = Some(frame.ts);
+        // Acquisition solves honor the lock's once-only undistort guard;
+        // locked-state maintenance keeps today's re-probe-when-none behavior.
+        let acquiring = !matches!(lock.state(), LockState::Locked | LockState::Drift);
+        let undistort = lock.undistort_map();
+        let try_undistort = if acquiring {
+            lock.try_undistort_hint()
+        } else {
+            undistort.is_none()
+        };
         let snapshot = Snapshot {
             image: frame.image.clone(),
             seq: frame.seq,
-            undistort: lock.undistort_map(),
+            undistort,
+            try_undistort,
+            opts: lock.solve_options(),
         };
         *self.latest.lock().unwrap() = Some(snapshot);
     }

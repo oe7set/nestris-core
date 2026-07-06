@@ -55,6 +55,8 @@ Popup {
         { path: "engine.calibration.adopt_margin", label: "Re-solve adopt margin", type: "f", min: 0, max: 0.5 },
         { path: "engine.calibration.undistort", label: "Barrel undistortion (auto)", type: "u" },
         { path: "engine.calibration.background_recalibration", label: "Background recalibration", type: "b" },
+        { path: "engine.calibration.background_acquisition", label: "Background acquisition", type: "b" },
+        { path: "engine.calibration.acquire_downscale_width", label: "Candidate detection width (0 = full res)", type: "i" },
         { path: "engine.calibration.menu_drift_hold", label: "Hold lock through menus", type: "b" },
         { section: "FUSION" },
         { path: "engine.fusion.vote_window", label: "Vote window (frames)", type: "i" },

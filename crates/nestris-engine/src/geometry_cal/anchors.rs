@@ -1,6 +1,6 @@
 //! Anchor detection for self-calibration (port of `geometry/anchors.py`).
 
-use nestris_vision::{Image, components, contour, morphology, ncc, resize};
+use nestris_vision::{Image, components, contour, morphology, ncc, resize, threshold};
 
 use crate::geometry::Quad;
 use crate::layout::{LayoutTable, TILE};
@@ -30,6 +30,24 @@ pub struct PlayfieldAnchor {
     pub score: f64,
     pub area_frac: f64,
     pub aspect: f64,
+}
+
+impl PlayfieldAnchor {
+    /// Map the quad corners from a downscaled detection frame back to source
+    /// coordinates. `score`/`area_frac`/`aspect` are resolution-relative and
+    /// only used for ranking, so they carry over unchanged.
+    pub fn scaled(mut self, sx: f64, sy: f64) -> Self {
+        for p in [
+            &mut self.quad.tl,
+            &mut self.quad.tr,
+            &mut self.quad.br,
+            &mut self.quad.bl,
+        ] {
+            p.0 *= sx;
+            p.1 *= sy;
+        }
+        self
+    }
 }
 
 /// One canonical<->source point correspondence for the homography solve.
@@ -93,7 +111,13 @@ pub fn quad_center(quad: &Quad) -> (f64, f64) {
 
 /// Detect up to `top_n` playfield-interior candidates, best score first.
 pub fn detect_playfield_candidates(image: &Image, top_n: usize) -> Vec<PlayfieldAnchor> {
-    let gray = to_luma(image);
+    detect_playfield_candidates_gray(&to_luma(image), top_n)
+}
+
+/// [`detect_playfield_candidates`] over an already-converted luma image, so
+/// the solver can share one `to_luma` pass with label detection (identical
+/// conversion — this is a pure cost refactor).
+pub fn detect_playfield_candidates_gray(gray: &Image, top_n: usize) -> Vec<PlayfieldAnchor> {
     let (w, h) = (gray.width, gray.height);
     let frame_area = (w * h) as f64;
 
@@ -101,10 +125,7 @@ pub fn detect_playfield_candidates(image: &Image, top_n: usize) -> Vec<Playfield
     let k5 = morphology::Kernel::ellipse5();
     let mut candidates: Vec<PlayfieldAnchor> = Vec::new();
     for thresh in DARK_THRESHES {
-        let mut base = Image::new(w, h, 1);
-        for (dst, &v) in base.data.iter_mut().zip(gray.data.iter()) {
-            *dst = u8::from(v < thresh);
-        }
+        let base = threshold::binary_lt(gray, thresh);
         let base = morphology::open(&morphology::close(&base, &k3, 2), &k3, 1);
         for extra_open in OPEN_KERNELS {
             let mask = if extra_open > 0 {
@@ -123,22 +144,34 @@ pub fn detect_playfield_candidates(image: &Image, top_n: usize) -> Vec<Playfield
 
 fn candidates_from_mask(mask: &Image, w: usize, h: usize, frame_area: f64) -> Vec<PlayfieldAnchor> {
     let labeled = components::connected_components(mask);
+    // Cheap stat-based rejections first; the survivors share ONE point
+    // collection pass instead of a full label-image scan per component.
+    let survivors: Vec<usize> = labeled
+        .components
+        .iter()
+        .enumerate()
+        .filter(|(_, comp)| {
+            let area = comp.area as f64;
+            if area < MIN_AREA_FRAC * frame_area || comp.w == 0 || comp.h == 0 {
+                return false;
+            }
+            let bbox_aspect = comp.h as f64 / comp.w as f64;
+            if bbox_aspect <= BBOX_ASPECT_PRE.0 || bbox_aspect >= BBOX_ASPECT_PRE.1 {
+                return false;
+            }
+            !(comp.x == 0
+                && comp.y == 0
+                && comp.x + comp.w >= w as u32
+                && comp.y + comp.h >= h as u32)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let point_sets = labeled.component_points_multi(&survivors);
     let mut out = Vec::new();
-    for (i, comp) in labeled.components.iter().enumerate() {
+    for (&i, points) in survivors.iter().zip(point_sets) {
+        let comp = &labeled.components[i];
         let area = comp.area as f64;
-        if area < MIN_AREA_FRAC * frame_area || comp.w == 0 || comp.h == 0 {
-            continue;
-        }
-        let bbox_aspect = comp.h as f64 / comp.w as f64;
-        if bbox_aspect <= BBOX_ASPECT_PRE.0 || bbox_aspect >= BBOX_ASPECT_PRE.1 {
-            continue;
-        }
-        if comp.x == 0 && comp.y == 0 && comp.x + comp.w >= w as u32 && comp.y + comp.h >= h as u32
-        {
-            continue;
-        }
-        let pts: Vec<(f64, f64)> = labeled
-            .component_points(i)
+        let pts: Vec<(f64, f64)> = points
             .into_iter()
             .map(|(x, y)| (x as f64, y as f64))
             .collect();

@@ -14,7 +14,9 @@ use nestris_vision::homography::{Mat3, mat3_inv, mat3_mul, project};
 use nestris_vision::undistort::UndistortMap;
 
 use crate::config::{CalibrationConfig, TrackingConfig};
-use crate::geometry_cal::calibration::{GeometryResult, Rectifier, estimate_geometry};
+use crate::geometry_cal::calibration::{
+    GeometryResult, Rectifier, SolveOptions, estimate_geometry_with,
+};
 use crate::geometry_cal::tracker::LocalTracker;
 use crate::layout::{LayoutTable, get_layout};
 
@@ -153,10 +155,29 @@ impl CalibrationLock {
         self.undistort.clone()
     }
 
+    /// The [`SolveOptions`] hosts should pass to off-thread solves so they
+    /// match the lock's own inline solves.
+    pub fn solve_options(&self) -> SolveOptions {
+        SolveOptions {
+            downscale_width: self.cfg.acquire_downscale_width,
+        }
+    }
+
+    /// Whether an off-thread *acquisition* solve should attempt radial
+    /// distortion estimation — mirrors the inline once-only guard so
+    /// back-to-back acquisition solves don't repeat the expensive probe.
+    pub fn try_undistort_hint(&self) -> bool {
+        self.try_undistort()
+    }
+
     /// Hand a host-computed background solve to the lock; adopted next frame
-    /// under the never-regress rule.
+    /// under the never-regress rule. A failed solve never replaces a pending
+    /// ok one (it still must arrive so background acquisition can reset its
+    /// streak on scene changes).
     pub fn offer_solution(&mut self, result: GeometryResult) {
-        self.offered = Some(result);
+        if result.ok() || self.offered.as_ref().is_none_or(|o| !o.ok()) {
+            self.offered = Some(result);
+        }
     }
 
     pub fn reset(&mut self) {
@@ -193,6 +214,9 @@ impl CalibrationLock {
             self.state,
             LockState::Unlocked | LockState::Lost | LockState::Acquiring
         ) {
+            if self.background && self.cfg.background_acquisition {
+                return self.acquire_background();
+            }
             return self.acquire(image);
         }
         self.track_prepare(image, hold_drift)
@@ -264,6 +288,17 @@ impl CalibrationLock {
     /// interval: the tracker reports misses or sustained motion, or the lock
     /// is already drifting. `None` = normal pacing.
     pub fn solve_interval_hint(&self) -> Option<f64> {
+        // While acquiring off-thread there is no OCR to compete with and the
+        // snapshot slot is newest-wins: solve back-to-back for minimal
+        // time-to-lock.
+        if self.cfg.background_acquisition
+            && matches!(
+                self.state,
+                LockState::Unlocked | LockState::Acquiring | LockState::Lost
+            )
+        {
+            return Some(0.0);
+        }
         self.tracker.as_ref()?;
         let urgent = self.state == LockState::Drift
             || self.miss_streak > 0
@@ -271,14 +306,42 @@ impl CalibrationLock {
         urgent.then_some(self.tracking_cfg.drift_solve_interval_s)
     }
 
+    /// Acquisition via the host's background solver: the pipeline thread
+    /// keeps flowing frames while the host runs the expensive solve
+    /// off-thread and hands results back through [`Self::offer_solution`].
+    /// Adoption semantics mirror the inline [`Self::acquire`] exactly, with
+    /// "consecutive frames" replaced by "consecutive solve results".
+    fn acquire_background(&mut self) -> LockStatus {
+        self.state = LockState::Acquiring;
+        self.wants_solve = true;
+        if let Some(result) = self.offered.take() {
+            if self.cfg.undistort != "off" {
+                self.undistort_tried = true;
+            }
+            if result.ok() && result.confidence >= self.cfg.acquire_threshold {
+                self.acquire_streak += 1;
+                self.adopt(&result);
+                if self.acquire_streak >= self.cfg.acquire_frames {
+                    self.state = LockState::Locked;
+                    self.drift_streak = 0;
+                }
+            } else {
+                self.acquire_streak = 0;
+                self.confidence = if result.ok() { result.confidence } else { 0.0 };
+            }
+        }
+        self.status()
+    }
+
     fn acquire(&mut self, image: &Image) -> LockStatus {
         self.state = LockState::Acquiring;
-        let result = estimate_geometry(
+        let result = estimate_geometry_with(
             image,
             self.layout,
             self.undistort.clone(),
             self.try_undistort(),
             self.frame_index,
+            &self.solve_options(),
         );
         if self.cfg.undistort != "off" {
             self.undistort_tried = true;
@@ -318,12 +381,13 @@ impl CalibrationLock {
             .frame_index
             .is_multiple_of(self.cfg.revalidate_every_n.max(1) as u64);
         if do_full && !hold_drift {
-            let result = estimate_geometry(
+            let result = estimate_geometry_with(
                 image,
                 self.layout,
                 self.undistort.clone(),
                 self.try_undistort(),
                 self.frame_index,
+                &self.solve_options(),
             );
             if self.cfg.undistort != "off" {
                 self.undistort_tried = true;

@@ -248,11 +248,38 @@ from ~6.2 ms to ~4.6 ms. The continuous tracker adds ≈ 0.1 ms on stable
 sources (deadband path) and ≈ 0.8 ms while actually following motion.
 
 The remaining hot path is dominated by rectification (the precomputed gather)
-and the playfield read. Acquisition solves (full geometry estimation, run
-inline per frame only while *unlocked*) cost ~1 s at 1080p — the sliding
-NCC uses integral-image statistics with an exact integer cross term, and the
-morphology kernels run as exact separable passes, but OpenCV's FFT-based
-`matchTemplate` is still faster on very large search windows. In production
-this never touches frame latency (solves run off-thread / in a Web Worker);
-downscaled candidate detection is on the improvement roadmap to make
-acquisition itself near-instant.
+and the playfield read. The sliding NCC uses integral-image statistics with
+an exact integer cross term, and the morphology kernels run as exact
+separable passes (row-parallel under `parallel`, like the undistort remap
+and BGR→gray).
+
+### Acquisition
+
+Acquisition solves (full geometry estimation while *unlocked*) are handled
+by two mechanisms, both **on by default in the GUIs and the web app** and
+off in the engine/CLI defaults (oracle byte-identity):
+
+- `calibration.background_acquisition` routes acquisition through the same
+  background solver that maintains the lock (native `RecalibThread`, web
+  recalib Worker), solving back-to-back on newest-wins snapshots while the
+  pipeline thread keeps flowing frames — a live preview stays at capture
+  fps during acquisition instead of stuttering at the solve rate. Adoption
+  mirrors the inline semantics (`acquire_threshold`, `acquire_frames`,
+  streak reset on failed solves).
+- `calibration.acquire_downscale_width` (GUI/web default 640) runs
+  playfield-candidate detection — the threshold/morphology/connected-
+  components sweep, the bulk of a solve — on an INTER_AREA-downscaled
+  frame. Label anchors, RANSAC, and validation stay at full resolution, so
+  lock quality and OCR are unaffected; `nestris bench --acquire N` measures
+  both time-to-lock and unlocked per-frame latency.
+
+With both off (the deterministic default), acquisition runs inline per
+frame and costs ~1 s at 1080p; OpenCV's FFT-based `matchTemplate` is still
+faster on very large search windows.
+
+Web-worker parallelism note: wasm builds stay single-threaded (SIMD128
+only). wasm-threads/rayon (`+atomics`) would require cross-origin-isolation
+headers (COOP/COEP) on every host serving the web build and a separate
+artifact; deferred until a real need appears — after off-thread
+acquisition, the engine worker's steady-state cost is the small canonical
+raster.

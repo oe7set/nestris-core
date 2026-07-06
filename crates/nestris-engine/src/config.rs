@@ -20,6 +20,14 @@ pub struct CalibrationConfig {
     pub adopt_margin: f64,
     pub background_recalibration: bool,
     pub menu_drift_hold: bool,
+    /// Run acquisition solves on the host's background solver instead of
+    /// inline on the pipeline thread (requires `background_recalibration`).
+    /// Default off: the oracle-verified inline acquisition stays bit-identical.
+    pub background_acquisition: bool,
+    /// Downscale the frame to this width for playfield-candidate detection
+    /// (labels/RANSAC/validation stay at full resolution). `0` = off
+    /// (bit-identical oracle path); GUIs/web use `640`.
+    pub acquire_downscale_width: u32,
 }
 
 impl Default for CalibrationConfig {
@@ -36,6 +44,8 @@ impl Default for CalibrationConfig {
             adopt_margin: 0.05,
             background_recalibration: true,
             menu_drift_hold: true,
+            background_acquisition: false,
+            acquire_downscale_width: 0,
         }
     }
 }

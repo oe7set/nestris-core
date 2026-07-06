@@ -102,6 +102,12 @@ enum Cmd {
         frames: u64,
         #[arg(long, default_value_t = 30)]
         warmup: u64,
+        /// Acquisition benchmark: reopen the source N times with the GUI
+        /// acquisition config (background solver + downscaled candidate
+        /// detection) and report time-to-lock plus per-frame latency while
+        /// unlocked (the "does the preview stutter" number).
+        #[arg(long, default_value_t = 0)]
+        acquire: u64,
     },
     /// Diff the full Rust pipeline against the Python oracle's stage dumps.
     Verify {
@@ -188,7 +194,14 @@ fn main() -> Result<()> {
             start,
             frames,
             warmup,
-        } => bench(&input, start, frames, warmup),
+            acquire,
+        } => {
+            if acquire > 0 {
+                bench_acquire(&input, start, frames, acquire)
+            } else {
+                bench(&input, start, frames, warmup)
+            }
+        }
         Cmd::Verify {
             fixtures,
             stages,
@@ -394,5 +407,85 @@ fn bench(input: &str, start: f64, frames: u64, warmup: u64) -> Result<()> {
         fills.iter().sum::<usize>() as f64 / fills.len() as f64,
         fills.iter().max().unwrap()
     );
+    Ok(())
+}
+
+/// Acquisition benchmark: `runs` cold starts with the GUI acquisition config
+/// (background solver + 640-wide candidate detection). Reports wall time to
+/// `Locked` and the per-frame pipeline latency while unlocked — the number
+/// that decides whether a live preview stutters during acquisition.
+fn bench_acquire(input: &str, start: f64, max_frames: u64, runs: u64) -> Result<()> {
+    let mut lock_times_s: Vec<f64> = Vec::new();
+    let mut unlocked_ms: Vec<f64> = Vec::new();
+    for run in 0..runs {
+        let mut decoder = VideoDecoder::open(input, start)?;
+        // Pace file input at source fps like a live device: time-to-lock is
+        // wall-clock bound (background solves run while frames flow), so an
+        // unpaced file would starve the solver of wall time.
+        let fps = decoder.info().fps.max(1.0);
+        let mut cfg = engine_config(false);
+        cfg.calibration.background_acquisition = true;
+        cfg.calibration.acquire_downscale_width = 640;
+        let mut processor = FrameProcessor::new(cfg);
+        let mut recalib = RecalibThread::start();
+        let started = std::time::Instant::now();
+        let mut locked_at: Option<(u64, f64)> = None;
+        let mut i = 0u64;
+        while let Some(mut frame) = decoder.next_frame()? {
+            if i >= max_frames {
+                break;
+            }
+            let due = i as f64 / fps;
+            let now = started.elapsed().as_secs_f64();
+            if now < due {
+                std::thread::sleep(std::time::Duration::from_secs_f64(due - now));
+            }
+            // Pacing hint for RecalibThread's interval check (file frames
+            // carry seq/fps timestamps already; keep them).
+            frame.ts = started.elapsed().as_secs_f64();
+            let t0 = std::time::Instant::now();
+            processor.process(&frame);
+            recalib.drive(&mut processor, &frame);
+            let dt = t0.elapsed().as_secs_f64() * 1000.0;
+            let locked =
+                processor.lock_state() == nestris_engine::geometry_cal::lock::LockState::Locked;
+            if !locked && locked_at.is_none() {
+                unlocked_ms.push(dt);
+            }
+            if locked && locked_at.is_none() {
+                locked_at = Some((i, started.elapsed().as_secs_f64()));
+                break;
+            }
+            i += 1;
+        }
+        match locked_at {
+            Some((frame, secs)) => {
+                lock_times_s.push(secs);
+                println!("run {run}: locked after {frame} frames ({secs:.2}s)");
+            }
+            None => println!("run {run}: no lock within {max_frames} frames"),
+        }
+    }
+    if !unlocked_ms.is_empty() {
+        unlocked_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let pct = |q: f64| unlocked_ms[((unlocked_ms.len() - 1) as f64 * q) as usize];
+        println!(
+            "unlocked pipeline ms/frame: p50={:.2} p99={:.2} max={:.2} ({} frames)",
+            pct(0.50),
+            pct(0.99),
+            unlocked_ms.last().unwrap(),
+            unlocked_ms.len()
+        );
+    }
+    if !lock_times_s.is_empty() {
+        println!(
+            "time to lock: mean={:.2}s min={:.2}s max={:.2}s ({}/{} runs locked)",
+            lock_times_s.iter().sum::<f64>() / lock_times_s.len() as f64,
+            lock_times_s.iter().cloned().fold(f64::INFINITY, f64::min),
+            lock_times_s.iter().cloned().fold(0.0, f64::max),
+            lock_times_s.len(),
+            runs
+        );
+    }
     Ok(())
 }

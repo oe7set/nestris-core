@@ -60,6 +60,15 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut GuiS
                         "Background recalibration",
                     );
                     ui.checkbox(
+                        &mut e.calibration.background_acquisition,
+                        "Background acquisition (smooth preview while searching)",
+                    );
+                    drag_u32(
+                        ui,
+                        &mut e.calibration.acquire_downscale_width,
+                        "Candidate detection width (0 = full res)",
+                    );
+                    ui.checkbox(
                         &mut e.calibration.menu_drift_hold,
                         "Hold lock through menus",
                     );

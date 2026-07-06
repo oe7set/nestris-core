@@ -2299,6 +2299,7 @@ dependencies = [
  "nestris-engine",
  "nestris-ngf",
  "nestris-vision",
+ "rayon",
  "serde_json",
  "tungstenite",
 ]

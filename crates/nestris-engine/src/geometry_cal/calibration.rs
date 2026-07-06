@@ -10,7 +10,7 @@ use nestris_vision::{Image, ncc, resize};
 
 use crate::geometry::Quad;
 use crate::geometry_cal::anchors::{
-    AnchorCorrespondence, detect_label_anchors, detect_playfield_candidates,
+    AnchorCorrespondence, detect_label_anchors, detect_playfield_candidates_gray,
     hud_constellation_score_from, playfield_correspondences,
 };
 use crate::geometry_cal::undistort_est::{apply_undistort, estimate_radial_distortion};
@@ -174,6 +174,15 @@ fn pf_quad_to_canonical(quad: &Quad, layout: &LayoutTable) -> Option<Mat3> {
     )
 }
 
+/// Host-tunable solve options. The default (`downscale_width: 0`) keeps the
+/// solve bit-identical to the oracle-verified path.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SolveOptions {
+    /// Downscale the frame to this width for playfield-candidate detection
+    /// only (labels/RANSAC/validation stay at full resolution). `0` = off.
+    pub downscale_width: u32,
+}
+
 /// Estimate the source->canonical homography for one frame.
 ///
 /// `seed` drives the deterministic RANSAC (derive from the frame seq).
@@ -183,6 +192,25 @@ pub fn estimate_geometry(
     undistort: Option<Arc<UndistortMap>>,
     try_undistort: bool,
     seed: u64,
+) -> GeometryResult {
+    estimate_geometry_with(
+        image,
+        layout,
+        undistort,
+        try_undistort,
+        seed,
+        &SolveOptions::default(),
+    )
+}
+
+/// [`estimate_geometry`] with host-tuned [`SolveOptions`].
+pub fn estimate_geometry_with(
+    image: &Image,
+    layout: &LayoutTable,
+    undistort: Option<Arc<UndistortMap>>,
+    try_undistort: bool,
+    seed: u64,
+    opts: &SolveOptions,
 ) -> GeometryResult {
     let mut umap = undistort;
     if umap.is_none() && try_undistort {
@@ -197,11 +225,27 @@ pub fn estimate_geometry(
         None => image,
     };
 
-    let candidates = detect_playfield_candidates(work, 6);
+    let work_gray = to_luma(work);
+    let dw = opts.downscale_width as usize;
+    let candidates = if dw > 0 && work_gray.width > dw {
+        // Candidate detection only seeds the label windows and 4 of the
+        // RANSAC correspondences; a ~±2 source-px quad from the downscaled
+        // mask is corrected by the full-res label anchors, and bad seeds
+        // still fail `validate_geometry` exactly like full-res ones.
+        let dh = (work_gray.height * dw + work_gray.width / 2) / work_gray.width;
+        let small = resize::resize_area(&work_gray, dw, dh.max(1));
+        let sx = work_gray.width as f64 / small.width as f64;
+        let sy = work_gray.height as f64 / small.height as f64;
+        detect_playfield_candidates_gray(&small, 6)
+            .into_iter()
+            .map(|c| c.scaled(sx, sy))
+            .collect()
+    } else {
+        detect_playfield_candidates_gray(&work_gray, 6)
+    };
     if candidates.is_empty() {
         return GeometryResult::failed(0.0, umap);
     }
-    let work_gray = to_luma(work);
     let mut rng = Pcg32::new(splitmix64(seed));
 
     let mut best: Option<GeometryResult> = None;

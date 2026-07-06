@@ -12,7 +12,10 @@ use crate::worker::SinkOptions;
 
 /// Bumped when new defaults should be applied to settings files written by
 /// older versions (see [`GuiSettings::load_from`]).
-const SETTINGS_VERSION: u32 = 2;
+const SETTINGS_VERSION: u32 = 3;
+
+/// GUI default for `calibration.acquire_downscale_width` (engine default: 0).
+pub const GUI_ACQUIRE_DOWNSCALE_WIDTH: u32 = 640;
 
 /// Everything the GUI persists between sessions.
 #[derive(Clone, Serialize, Deserialize)]
@@ -38,6 +41,11 @@ impl Default for GuiSettings {
         // GUI default: continuous geometry tracking on. The engine-level
         // default stays off (oracle parity for CLI verification runs).
         engine.tracking.enabled = true;
+        // GUI defaults: acquisition runs on the background solver with
+        // downscaled candidate detection, so live sources stay smooth while
+        // the playfield is being searched. Engine defaults stay off.
+        engine.calibration.background_acquisition = true;
+        engine.calibration.acquire_downscale_width = GUI_ACQUIRE_DOWNSCALE_WIDTH;
         Self {
             settings_version: SETTINGS_VERSION,
             engine,
@@ -70,8 +78,12 @@ impl GuiSettings {
         if settings.settings_version < 2 {
             settings.engine.tracking.enabled = true;
             settings.record_enabled = true;
-            settings.settings_version = SETTINGS_VERSION;
         }
+        if settings.settings_version < 3 {
+            settings.engine.calibration.background_acquisition = true;
+            settings.engine.calibration.acquire_downscale_width = GUI_ACQUIRE_DOWNSCALE_WIDTH;
+        }
+        settings.settings_version = SETTINGS_VERSION;
         settings
     }
 

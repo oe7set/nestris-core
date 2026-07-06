@@ -67,9 +67,18 @@ Live inputs are normalized to 1280×720 and timestamped with the wall clock.
 ```sh
 nestris bench --input fixture.mp4 --start 60 --frames 300
 # ms/frame: p50=3.44 p90=5.57 ...  (p50 fps=290.7)
+
+nestris bench --input fixture.mp4 --acquire 5
+# run 0: locked after 4 frames (0.31s) ...
+# unlocked pipeline ms/frame: p50=... p99=...
+# time to lock: mean=...s
 ```
 
-Measures the production hot path (geometry re-solves on the worker thread).
+The default mode measures the production hot path (geometry re-solves on
+the worker thread). `--acquire N` performs N cold starts with the GUI
+acquisition config (background solver + 640-wide candidate detection) and
+reports time-to-lock plus the per-frame latency while unlocked — the
+number that decides whether a live preview stutters during acquisition.
 
 ### Verify against the Python oracle
 
@@ -96,6 +105,12 @@ undistort = "auto"                 # "auto" | "off"  (barrel correction)
 adopt_margin = 0.05                # re-solve must beat current lock by this
 background_recalibration = true    # host-driven solve protocol on/off
 menu_drift_hold = true             # keep the lock through menus/pause/curtain
+background_acquisition = false     # acquisition on the background solver too
+                                   # (GUIs/web default ON: smooth preview while
+                                   # searching; needs background_recalibration)
+acquire_downscale_width = 0        # candidate detection at this width, 0=full
+                                   # res (GUIs/web default 640; labels/RANSAC/
+                                   # validation always run at full resolution)
 
 [fusion]
 vote_window = 5                    # frames in the majority-vote window
