@@ -19,9 +19,13 @@ the **SIL Open Font License 1.1**; the license text ships alongside the
 font file in the application resources and at
 `crates/nestris-qt-gui/assets/fonts/OFL.txt` in the source tree.
 
-## ffmpeg (runtime prerequisite, not bundled)
+## ffmpeg
 
-Video decoding and DirectShow capture invoke a locally installed
-`ffmpeg`/`ffprobe` executable at runtime. ffmpeg is **not** included in
-this distribution — install it separately (e.g. `winget install
-ffmpeg`, `apt install ffmpeg`, `brew install ffmpeg`).
+Video decoding and DirectShow capture invoke `ffmpeg`/`ffprobe`
+executables at runtime.
+
+- **Windows** release archives bundle these binaries — see
+  `FFMPEG-NOTICE.md` alongside this file for provenance, the GPLv3
+  license, and how to replace them.
+- **Linux/macOS** distributions do not bundle ffmpeg — install it
+  separately (e.g. `apt install ffmpeg`, `brew install ffmpeg`).

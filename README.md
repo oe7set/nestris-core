@@ -67,8 +67,9 @@ cargo test --workspace                 # unit + CV golden tests
 cargo run --release -p nestris-cli -- run --input path\to\capture.mp4 --jsonl out.jsonl
 ```
 
-`nestris run` needs `ffmpeg`/`ffprobe` on `PATH` (Windows:
-`winget install Gyan.FFmpeg`, or set `NESTRIS_FFMPEG`).
+`nestris run` needs `ffmpeg`/`ffprobe`. The Windows release zips bundle
+them (no install needed); for source builds put them on `PATH` (Windows:
+`winget install Gyan.FFmpeg`) or set `NESTRIS_FFMPEG`.
 
 ## Desktop GUI
 

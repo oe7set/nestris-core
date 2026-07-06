@@ -3,10 +3,13 @@
 ## Prerequisites
 
 - **Rust** (pinned by `rust-toolchain.toml`; rustup installs it on first build)
-- **ffmpeg + ffprobe** for the native CLI — install via `winget install
-  Gyan.FFmpeg` (Windows) or your package manager. The CLI finds them on
-  `PATH`, in the winget links directory, or via the `NESTRIS_FFMPEG`
-  environment variable (a directory containing the executables).
+- **ffmpeg + ffprobe** for the native CLI and GUIs. The **Windows release
+  zips bundle both** (in the `ffmpeg/` directory next to each executable) —
+  nothing to install. For source builds and on Linux/macOS install them via
+  `winget install Gyan.FFmpeg` (Windows) or your package manager. Search
+  order: the `NESTRIS_FFMPEG` environment variable (a directory containing
+  the executables, always wins), bundled binaries next to the executable,
+  the winget links directory, then `PATH`.
 - **Node 20+** and **wasm-pack** for the web GUI.
 
 ## Native CLI (`nestris`)

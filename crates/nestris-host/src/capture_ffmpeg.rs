@@ -13,24 +13,55 @@ use anyhow::{Context, Result, bail};
 use nestris_engine::frame::Frame;
 use nestris_vision::Image;
 
-/// Locate ffmpeg/ffprobe: `NESTRIS_FFMPEG` dir override, PATH, or the
-/// standard winget links directory.
+/// Locate ffmpeg/ffprobe, in priority order: `NESTRIS_FFMPEG` dir override,
+/// bundled next to the executable (`ffmpeg/` subdir, the exe dir itself, or
+/// a shared `ffmpeg/` dir one level up in the combined release bundle), the
+/// standard winget links directory, then PATH.
 fn tool_path(tool: &str) -> String {
+    let exe_name = format!("{tool}{}", std::env::consts::EXE_SUFFIX);
     if let Ok(dir) = std::env::var("NESTRIS_FFMPEG") {
-        let p = Path::new(&dir).join(format!("{tool}.exe"));
+        let p = Path::new(&dir).join(&exe_name);
         if p.exists() {
             return p.to_string_lossy().into_owned();
+        }
+    }
+    if let Ok(me) = std::env::current_exe()
+        && let Some(dir) = me.parent()
+    {
+        let mut candidates = vec![dir.join("ffmpeg").join(&exe_name), dir.join(&exe_name)];
+        if let Some(parent) = dir.parent() {
+            candidates.push(parent.join("ffmpeg").join(&exe_name));
+        }
+        for p in candidates {
+            if p.exists() {
+                return p.to_string_lossy().into_owned();
+            }
         }
     }
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
         let p = Path::new(&local)
             .join("Microsoft/WinGet/Links")
-            .join(format!("{tool}.exe"));
+            .join(&exe_name);
         if p.exists() {
             return p.to_string_lossy().into_owned();
         }
     }
     tool.to_string()
+}
+
+/// A [`Command`] for one of the bundled tools. On Windows the child gets
+/// `CREATE_NO_WINDOW`: ffmpeg/ffprobe are console binaries and would
+/// otherwise flash a console window when spawned from the GUIs.
+fn tool_command(tool: &str) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(tool_path(tool));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
 }
 
 /// Probed stream properties.
@@ -43,7 +74,7 @@ pub struct VideoInfo {
 }
 
 pub fn probe(input: &str) -> Result<VideoInfo> {
-    let output = Command::new(tool_path("ffprobe"))
+    let output = tool_command("ffprobe")
         .args([
             "-v",
             "error",
@@ -92,7 +123,7 @@ pub fn probe(input: &str) -> Result<VideoInfo> {
 
 /// List DirectShow capture devices (Windows) via ffmpeg.
 pub fn list_devices() -> Result<String> {
-    let output = Command::new(tool_path("ffmpeg"))
+    let output = tool_command("ffmpeg")
         .args([
             "-hide_banner",
             "-list_devices",
@@ -126,7 +157,7 @@ impl VideoDecoder {
     /// Open `input` (file path or `dshow:...` device) at `start` seconds.
     pub fn open(input: &str, start: f64) -> Result<VideoDecoder> {
         let live = input.starts_with("dshow:");
-        let mut cmd = Command::new(tool_path("ffmpeg"));
+        let mut cmd = tool_command("ffmpeg");
         cmd.arg("-v").arg("error");
         let info;
         if live {
