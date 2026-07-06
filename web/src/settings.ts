@@ -19,6 +19,10 @@ export function defaultConfig(): EngineConfigJson {
       adopt_margin: 0.05,
       background_recalibration: true,
       menu_drift_hold: true,
+      // Web defaults: acquisition runs in the recalib worker with downscaled
+      // candidate detection so the preview stays smooth while searching.
+      background_acquisition: true,
+      acquire_downscale_width: 640,
     },
     fusion: {
       vote_window: 5,
@@ -77,6 +81,8 @@ const SCHEMA: { group: string; fields: FieldDef[] }[] = [
       { path: "calibration.adopt_margin", label: "Re-solve adopt margin", kind: "number", step: 0.01 },
       { path: "calibration.undistort", label: "Barrel undistortion", kind: "select", options: ["auto", "off"] },
       { path: "calibration.background_recalibration", label: "Background recalibration", kind: "bool" },
+      { path: "calibration.background_acquisition", label: "Background acquisition", kind: "bool" },
+      { path: "calibration.acquire_downscale_width", label: "Candidate detection width (0 = full res)", kind: "number", step: 40 },
       { path: "calibration.menu_drift_hold", label: "Hold lock through menus", kind: "bool" },
     ],
   },

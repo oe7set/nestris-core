@@ -14,7 +14,9 @@ use std::collections::VecDeque;
 
 use nestris_engine::config::EngineConfig;
 use nestris_engine::frame::Frame;
-use nestris_engine::geometry_cal::calibration::{GeometryResult, estimate_geometry};
+use nestris_engine::geometry_cal::calibration::{
+    GeometryResult, SolveOptions, estimate_geometry_with,
+};
 use nestris_engine::layout::get_layout;
 use nestris_engine::output::OutputFrame;
 use nestris_engine::processor::FrameProcessor;
@@ -220,18 +222,27 @@ impl Engine {
     }
 
     /// Adopt a Worker-computed solve: 9 homography values + confidence.
+    /// An empty `h` reports a failed solve — background acquisition needs
+    /// failures to reset its streak (maintenance mode ignores them).
     pub fn offer_solution(&mut self, h: Vec<f64>, confidence: f64) {
-        if h.len() != 9 {
-            return;
-        }
-        let mut mat: Mat3 = [0.0; 9];
-        mat.copy_from_slice(&h);
-        self.processor.lock().offer_solution(GeometryResult {
-            homography: Some(mat),
-            confidence,
-            undistort: None,
-            residual: 0.0,
-        });
+        let result = if h.len() == 9 {
+            let mut mat: Mat3 = [0.0; 9];
+            mat.copy_from_slice(&h);
+            GeometryResult {
+                homography: Some(mat),
+                confidence,
+                undistort: None,
+                residual: 0.0,
+            }
+        } else {
+            GeometryResult {
+                homography: None,
+                confidence,
+                undistort: None,
+                residual: f64::INFINITY,
+            }
+        };
+        self.processor.lock().offer_solution(result);
     }
 
     /// Source-space corners of the canonical raster (tl,tr,br,bl as x,y
@@ -350,6 +361,7 @@ pub struct Solver {
     rgba: Vec<u8>,
     width: usize,
     height: usize,
+    opts: SolveOptions,
 }
 
 #[wasm_bindgen]
@@ -360,7 +372,17 @@ impl Solver {
             rgba: Vec::new(),
             width: 0,
             height: 0,
+            opts: SolveOptions::default(),
         }
+    }
+
+    /// Adopt the engine config's solve options (candidate-detection
+    /// downscale width) so worker solves match the main engine's.
+    pub fn set_config(&mut self, config_json: &str) {
+        let config = parse_config(config_json);
+        self.opts = SolveOptions {
+            downscale_width: config.calibration.acquire_downscale_width,
+        };
     }
 
     pub fn frame_ptr(&mut self, width: usize, height: usize) -> *mut u8 {
@@ -370,18 +392,20 @@ impl Solver {
         self.rgba.as_mut_ptr()
     }
 
-    /// Solve the buffered frame; returns `{"h":[...9],"confidence":x}` JSON
-    /// or `"null"` when no geometry was found.
+    /// Solve the buffered frame; returns `{"h":[...9],"confidence":x}` JSON,
+    /// `{"h":null,"confidence":x}` for a failed solve (background acquisition
+    /// resets its streak on those), or `"null"` on hard errors.
     pub fn solve(&mut self, seed: u64) -> String {
         let frame = Frame::from_rgba(&self.rgba, self.width, self.height, 0, 0.0);
-        let result = estimate_geometry(&frame.image, get_layout(), None, false, seed);
+        let result =
+            estimate_geometry_with(&frame.image, get_layout(), None, false, seed, &self.opts);
         match result.homography {
             Some(h) => format!(
                 "{{\"h\":{:?},\"confidence\":{}}}",
                 h.to_vec(),
                 result.confidence
             ),
-            None => "null".to_string(),
+            None => format!("{{\"h\":null,\"confidence\":{}}}", result.confidence),
         }
     }
 }

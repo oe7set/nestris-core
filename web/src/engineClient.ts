@@ -107,6 +107,18 @@ export class EngineClient {
       return false;
     }
     this.busy = true;
+    // Prefer transferring a VideoFrame: the worker copies it straight into
+    // wasm memory (copyTo), skipping the canvas rasterize + getImageData
+    // readback. Falls back to the ImageBitmap path where unsupported.
+    if (typeof VideoFrame === "function") {
+      try {
+        const frame = new VideoFrame(video, { timestamp: Math.round(ts * 1e6) });
+        this.worker.postMessage({ t: "frame", frame, ts }, [frame]);
+        return true;
+      } catch {
+        /* e.g. no current frame yet — fall through to createImageBitmap */
+      }
+    }
     createImageBitmap(video).then(
       (bitmap) => this.worker.postMessage({ t: "frame", bitmap, ts }, [bitmap]),
       (err) => {
