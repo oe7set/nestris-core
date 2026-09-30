@@ -4,6 +4,8 @@
 //! engine — nothing in this crate is needed by the wasm or Android hosts.
 
 pub mod capture_ffmpeg;
+pub mod capture_supervisor;
+pub mod config_overlay;
 pub mod recalib_thread;
 pub mod recording;
 pub mod sinks;

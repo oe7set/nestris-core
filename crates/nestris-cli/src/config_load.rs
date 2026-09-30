@@ -2,15 +2,14 @@
 //! extension), named presets, and repeatable `--set path.to.field=value`
 //! overrides applied on top of the file.
 //!
-//! Overrides work on a `serde_json::Value` tree so they compose with any
-//! config format: file → Value, dotted-path assignments, then a strict
-//! deserialization into [`EngineConfig`] which rejects unknown paths.
+//! The file parsing and override machinery lives in
+//! `nestris_host::config_overlay` (shared with the station daemon).
 
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use nestris_engine::config::EngineConfig;
-use serde_json::Value;
+use nestris_host::config_overlay;
 
 /// Load a config file (`.toml`, `.json`, `.yaml`/`.yml`), apply the named
 /// preset (if any) and `--set` overrides, in that order.
@@ -20,7 +19,7 @@ pub fn load(
     overrides: &[String],
 ) -> Result<EngineConfig> {
     let mut value = match path {
-        Some(path) => file_to_value(path)?,
+        Some(path) => config_overlay::file_to_value(path)?,
         None => serde_json::to_value(EngineConfig::default())?,
     };
 
@@ -32,94 +31,14 @@ pub fn load(
         value = serde_json::to_value(cfg)?;
     }
 
-    for assignment in overrides {
-        apply_override(&mut value, assignment)?;
-    }
-
+    config_overlay::apply_overrides::<EngineConfig>(&mut value, overrides)?;
     serde_json::from_value(value).context("config did not match the engine schema")
-}
-
-fn file_to_value(path: &Path) -> Result<Value> {
-    let raw =
-        std::fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .unwrap_or_default();
-    let value = match ext.as_str() {
-        "toml" => {
-            let cfg: toml::Value = toml::from_str(&raw).context("parse config TOML")?;
-            serde_json::to_value(cfg)?
-        }
-        "json" => serde_json::from_str(&raw).context("parse config JSON")?,
-        "yaml" | "yml" => serde_yaml_ng::from_str(&raw).context("parse config YAML")?,
-        other => {
-            bail!("unsupported config extension {other:?} (expected .toml, .json, .yaml or .yml)")
-        }
-    };
-    Ok(value)
 }
 
 fn apply_preset(cfg: &mut EngineConfig, name: &str) -> Result<()> {
     match name {
         "handheld" => cfg.apply_handheld_preset(),
         other => bail!("unknown preset {other:?} (available: handheld)"),
-    }
-    Ok(())
-}
-
-/// Apply one `path.to.field=value` assignment. The right-hand side is parsed
-/// as JSON when possible (numbers, booleans, quoted strings) and falls back
-/// to a plain string, so `--set recognition.score_base=hex` works unquoted.
-///
-/// Paths are validated against the schema (the serialized default config):
-/// `EngineConfig` tolerates unknown keys when parsing, so without this check
-/// a typo like `--set fusionn.vote_window=7` would be silently ignored.
-fn apply_override(root: &mut Value, assignment: &str) -> Result<()> {
-    let Some((path, raw_value)) = assignment.split_once('=') else {
-        bail!("--set expects path.to.field=value, got {assignment:?}");
-    };
-    let path = path.trim();
-    if path.is_empty() {
-        bail!("--set has an empty field path in {assignment:?}");
-    }
-    validate_path(path)?;
-    let value: Value = serde_json::from_str(raw_value.trim())
-        .unwrap_or_else(|_| Value::String(raw_value.trim().to_string()));
-
-    let mut node = root;
-    let segments: Vec<&str> = path.split('.').collect();
-    for (i, segment) in segments.iter().enumerate() {
-        let map = node
-            .as_object_mut()
-            .with_context(|| format!("config path {path:?}: {segment:?} is not a section"))?;
-        if i == segments.len() - 1 {
-            map.insert((*segment).to_string(), value);
-            return Ok(());
-        }
-        node = map
-            .entry((*segment).to_string())
-            .or_insert_with(|| Value::Object(Default::default()));
-    }
-    unreachable!("segments is never empty");
-}
-
-/// Ensure every segment of `path` exists in the engine-config schema.
-fn validate_path(path: &str) -> Result<()> {
-    let schema = serde_json::to_value(EngineConfig::default()).expect("default serializes");
-    let mut node = &schema;
-    for segment in path.split('.') {
-        match node.get(segment) {
-            Some(next) => node = next,
-            None => {
-                let known = node
-                    .as_object()
-                    .map(|m| m.keys().cloned().collect::<Vec<_>>().join(", "))
-                    .unwrap_or_default();
-                bail!("unknown config field {segment:?} in {path:?} (known: {known})");
-            }
-        }
     }
     Ok(())
 }

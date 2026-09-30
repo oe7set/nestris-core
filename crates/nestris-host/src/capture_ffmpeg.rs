@@ -5,9 +5,11 @@
 //! (H264/AV1 in various containers), and live capture uses the same code
 //! path (`-f dshow` / `-f v4l2`).
 
-use std::io::Read;
-use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
 use nestris_engine::frame::Frame;
@@ -121,6 +123,30 @@ pub fn probe(input: &str) -> Result<VideoInfo> {
     })
 }
 
+/// Video4Linux capture devices: the stable `/dev/v4l/by-id` links first
+/// (they survive re-plugging into another port), then raw `/dev/video*`.
+pub fn list_v4l2_devices() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for dir in ["/dev/v4l/by-id", "/dev"] {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        let mut found: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                dir != "/dev"
+                    || p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("video"))
+            })
+            .collect();
+        found.sort();
+        out.extend(found);
+    }
+    out
+}
+
 /// List DirectShow capture devices (Windows) via ffmpeg.
 pub fn list_devices() -> Result<String> {
     let output = tool_command("ffmpeg")
@@ -139,11 +165,92 @@ pub fn list_devices() -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
+/// Live-capture options (ignored for files). Zero / `None` leaves the
+/// choice to the device driver.
+#[derive(Clone, Debug)]
+pub struct LiveOptions {
+    /// Device pixel format, e.g. `mjpeg` or `yuyv422` (v4l2 `-input_format`,
+    /// dshow `-vcodec`).
+    pub input_format: Option<String>,
+    /// Requested capture size (`-video_size`); `0` = device default.
+    pub capture_width: u32,
+    pub capture_height: u32,
+    /// Requested capture rate (`-framerate`); `None` = device default.
+    pub fps: Option<f64>,
+    /// Frames are scaled to this size so the frame layout is known up front.
+    pub width: usize,
+    pub height: usize,
+}
+
+impl Default for LiveOptions {
+    fn default() -> Self {
+        Self {
+            input_format: None,
+            capture_width: 0,
+            capture_height: 0,
+            fps: None,
+            width: 1280,
+            height: 720,
+        }
+    }
+}
+
+/// Source kinds recognized in an input string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputKind {
+    File,
+    /// `dshow:<device name>` (Windows DirectShow).
+    DirectShow,
+    /// `v4l2:<device path>` (Linux Video4Linux2).
+    V4l2,
+}
+
+impl InputKind {
+    pub fn of(input: &str) -> InputKind {
+        if input.starts_with("dshow:") {
+            InputKind::DirectShow
+        } else if input.starts_with("v4l2:") {
+            InputKind::V4l2
+        } else {
+            InputKind::File
+        }
+    }
+
+    pub fn is_live(self) -> bool {
+        self != InputKind::File
+    }
+}
+
+/// The local device path a live input depends on (`v4l2:` only), so hosts
+/// can wait for a re-plugged device instead of hammering ffmpeg.
+pub fn device_path(input: &str) -> Option<&Path> {
+    input.strip_prefix("v4l2:").map(Path::new)
+}
+
+/// Lines of ffmpeg stderr kept for diagnostics.
+const STDERR_TAIL: usize = 20;
+
+/// Kills the ffmpeg child from another thread (unblocks a pending read).
+#[derive(Clone)]
+pub struct DecoderKiller {
+    child: Arc<Mutex<Child>>,
+}
+
+impl DecoderKiller {
+    pub fn kill(&self) {
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+        }
+    }
+}
+
 /// Streaming decoder: raw BGR24 frames read from an ffmpeg pipe.
-/// `dshow:<device name>` opens a live DirectShow device; anything else is a
-/// file/URL ffmpeg can read.
+/// `dshow:<device name>` / `v4l2:<device path>` open a live device;
+/// anything else is a file/URL ffmpeg can read.
 pub struct VideoDecoder {
-    child: Child,
+    child: Arc<Mutex<Child>>,
+    stdout: ChildStdout,
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
     info: VideoInfo,
     frame_bytes: usize,
     next_seq: i64,
@@ -154,20 +261,51 @@ pub struct VideoDecoder {
 }
 
 impl VideoDecoder {
-    /// Open `input` (file path or `dshow:...` device) at `start` seconds.
+    /// Open `input` (file path or live device) at `start` seconds with the
+    /// default live options.
     pub fn open(input: &str, start: f64) -> Result<VideoDecoder> {
-        let live = input.starts_with("dshow:");
+        Self::open_with(input, start, &LiveOptions::default())
+    }
+
+    /// Open `input` with explicit live-capture options.
+    pub fn open_with(input: &str, start: f64, opts: &LiveOptions) -> Result<VideoDecoder> {
+        let kind = InputKind::of(input);
+        let live = kind.is_live();
         let mut cmd = tool_command("ffmpeg");
-        cmd.arg("-v").arg("error");
-        let info;
+        cmd.args(["-hide_banner", "-nostdin", "-v", "error"]);
+        let mut info;
         if live {
-            let device = input.trim_start_matches("dshow:");
-            cmd.args(["-f", "dshow", "-i", &format!("video={device}")]);
-            // dshow cannot be ffprobe'd before opening; scale to a known size.
+            // Low latency: never buffer ahead of the engine.
+            cmd.args(["-fflags", "nobuffer", "-thread_queue_size", "64"]);
+            let (format, device) = match kind {
+                InputKind::DirectShow => ("dshow", format!("video={}", &input["dshow:".len()..])),
+                _ => ("v4l2", input["v4l2:".len()..].to_string()),
+            };
+            cmd.args(["-f", format]);
+            if let Some(fmt) = opts.input_format.as_deref().filter(|f| !f.is_empty()) {
+                let key = if kind == InputKind::V4l2 {
+                    "-input_format"
+                } else {
+                    "-vcodec"
+                };
+                cmd.args([key, fmt]);
+            }
+            if opts.capture_width > 0 && opts.capture_height > 0 {
+                cmd.arg("-video_size")
+                    .arg(format!("{}x{}", opts.capture_width, opts.capture_height));
+            }
+            if let Some(fps) = opts.fps.filter(|f| *f > 0.0) {
+                cmd.arg("-framerate").arg(format!("{fps}"));
+            }
+            cmd.args(["-i", &device]);
+            // Live devices cannot be ffprobe'd before opening; scale to a
+            // known size so the frame layout is fixed.
+            cmd.arg("-vf")
+                .arg(format!("scale={}:{}", opts.width, opts.height));
             info = VideoInfo {
-                width: 0,
-                height: 0,
-                fps: 60.0,
+                width: opts.width,
+                height: opts.height,
+                fps: opts.fps.unwrap_or(60.0),
                 duration_s: None,
             };
         } else {
@@ -176,15 +314,6 @@ impl VideoDecoder {
                 cmd.arg("-ss").arg(format!("{start}"));
             }
             cmd.args(["-i", input]);
-        }
-        let mut info = info;
-        if live {
-            // Normalize live input to 1280x720 so the frame size is known.
-            cmd.args(["-vf", "scale=1280:720"]);
-            info.width = 1280;
-            info.height = 720;
-        }
-        if !live {
             // Emit each decoded frame exactly once. Without this, ffmpeg's
             // default CFR behavior duplicates frames on variable-frame-rate
             // sources (phone captures), shifting frame indexes against any
@@ -192,14 +321,34 @@ impl VideoDecoder {
             // full second on the WIN fixtures).
             cmd.args(["-fps_mode", "passthrough"]);
         }
+        if info.width == 0 || info.height == 0 {
+            bail!("invalid frame size {}x{}", info.width, info.height);
+        }
+        info.fps = info.fps.max(1.0);
         cmd.args(["-f", "rawvideo", "-pix_fmt", "bgr24", "-"])
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .stdin(Stdio::null());
-        let child = cmd.spawn().context("spawn ffmpeg")?;
+        let mut child = cmd.spawn().context("spawn ffmpeg")?;
+        let stdout = child.stdout.take().context("ffmpeg stdout")?;
+        let stderr_tail: Arc<Mutex<VecDeque<String>>> = Arc::default();
+        if let Some(stderr) = child.stderr.take() {
+            let tail = stderr_tail.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(|l| l.ok()) {
+                    let mut tail = tail.lock().unwrap_or_else(|e| e.into_inner());
+                    if tail.len() >= STDERR_TAIL {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line);
+                }
+            });
+        }
         let frame_bytes = info.width * info.height * 3;
         Ok(VideoDecoder {
-            child,
+            child: Arc::new(Mutex::new(child)),
+            stdout,
+            stderr_tail,
             info,
             frame_bytes,
             next_seq: 0,
@@ -212,14 +361,28 @@ impl VideoDecoder {
         &self.info
     }
 
+    /// Handle that kills this decoder's ffmpeg from another thread.
+    pub fn killer(&self) -> DecoderKiller {
+        DecoderKiller {
+            child: self.child.clone(),
+        }
+    }
+
+    /// The last lines ffmpeg wrote to stderr (why a device failed).
+    pub fn stderr_tail(&self) -> Vec<String> {
+        self.stderr_tail
+            .lock()
+            .map(|t| t.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Read the next frame; `None` at end of stream. `ts` defaults to
     /// `seq / fps` unless the caller overrides it afterwards.
     pub fn next_frame(&mut self) -> Result<Option<Frame>> {
-        let stdout = self.child.stdout.as_mut().context("ffmpeg stdout")?;
         let mut buf = vec![0u8; self.frame_bytes];
         let mut filled = 0usize;
         while filled < buf.len() {
-            let n = stdout.read(&mut buf[filled..])?;
+            let n = self.stdout.read(&mut buf[filled..])?;
             if n == 0 {
                 return Ok(None);
             }
@@ -239,7 +402,9 @@ impl VideoDecoder {
 
 impl Drop for VideoDecoder {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }

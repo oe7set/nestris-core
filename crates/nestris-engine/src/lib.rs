@@ -11,6 +11,7 @@ pub mod enums;
 pub mod frame;
 pub mod geometry;
 pub mod geometry_cal;
+pub mod integrity;
 pub mod layout;
 pub mod nes_palette;
 pub mod output;

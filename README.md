@@ -40,6 +40,9 @@ Highlights beyond the original port:
   output schema.
 - **[docs/NGF.md](docs/NGF.md)** — the NGF recording format, the recording
   lifecycle, and replay.
+- **[docs/STATION.md](docs/STATION.md)** — the Debian tournament station:
+  install, configuration, MQTT contract, cheat detection, validation,
+  self-healing.
 - **[docs/STATS.md](docs/STATS.md)** — exact definitions of every computed
   statistic.
 
@@ -52,13 +55,15 @@ Highlights beyond the original port:
 | `nestris-ngf` | NGF (NestrisChamps Game Format) codec, game recorder, replay engine. Sans-io, wasm-clean. |
 | `nestris-host` | Shared native glue: ffmpeg-pipe capture, output sinks, recalibration worker thread, crash-safe recording sink. |
 | `nestris-cli` | Native binary: `run`/`replay`/`bench`/`verify`/`list-devices`. |
+| `nestris-station` | Headless tournament-station daemon for Debian: self-healing v4l2 capture, ESP32 RFID player login, Select-cheat detection, per-game validation, MQTT with a durable spool, systemd/`.deb` packaging. |
 | `nestris-gui-core` | GUI-agnostic desktop core shared by the frontends: pipeline worker thread, persisted settings, session PB store. |
 | `nestris-gui` | Native desktop GUI (egui): previews, dashboard, stats window, transport, replay viewer, full settings dialog. |
 | `nestris-qt-gui` | Native desktop GUI (Qt 6 + QML via cxx-qt): NestrisChamps-`classic_1080`-style dashboard shell. Excluded from the root workspace — building it needs a Qt SDK ([docs/USAGE.md](docs/USAGE.md)). |
 | `nestris-wasm` | `wasm-bindgen` exports (binary snapshot boundary) for the browser GUI in `web/`. |
 | `nestris-android` | UniFFI (Kotlin) bindings. |
 
-Dependency direction is strict: `vision ← engine ← ngf ← gui-core ← {cli, gui, qt-gui, wasm}`.
+Dependency direction is strict: `vision ← engine ← ngf ← gui-core ← {cli, gui, qt-gui, wasm}`
+(`nestris-station` sits beside the CLI on `engine ← ngf ← host`).
 
 ## Quickstart
 
@@ -104,12 +109,23 @@ with a binary snapshot boundary, so the page never janks; files and replays
 get a transport bar, the statistics section mirrors the desktop stats
 window, and finished games download automatically as `.ngf.gz`.
 
-## Live capture (Windows)
+## Live capture
 
 ```sh
 nestris list-devices
-nestris run --input "dshow:YOUR CAPTURE DEVICE" --ws 127.0.0.1:8765
+nestris run --input "dshow:YOUR CAPTURE DEVICE" --ws 127.0.0.1:8765      # Windows
+nestris run --input "v4l2:/dev/v4l/by-id/...-video-index0" --ws 127.0.0.1:8765   # Linux
 ```
+
+## Tournament station (Debian, headless)
+
+```sh
+cargo deb -p nestris-station && sudo apt install ./target/debian/nestris-station_*.deb
+```
+
+Starts at boot, captures from the USB stick, reads the player from the ESP32
+RFID reader, detects the Select cheat and publishes live state and validated
+results over MQTT — see [docs/STATION.md](docs/STATION.md).
 
 ## Verification against the Python oracle
 

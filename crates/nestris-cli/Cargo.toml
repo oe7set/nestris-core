@@ -17,5 +17,3 @@ nestris-ngf = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-toml = "0.9"
-serde_yaml_ng = "0.10"

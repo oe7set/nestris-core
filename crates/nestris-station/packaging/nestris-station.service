@@ -1,0 +1,52 @@
+[Unit]
+Description=Retroverse NES-Tetris station (capture, RFID, MQTT)
+Documentation=https://github.com/ErwinSpitaler/nestris-core/blob/main/docs/STATION.md
+Wants=network-online.target
+After=network-online.target
+# Never give up restarting: an unattended station must come back on its own.
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/nestris-station run --config /etc/nestris-station/station.toml
+# Secrets / overrides: NESTRIS_STATION__MQTT__PASSWORD=..., RUST_LOG=...
+EnvironmentFile=-/etc/nestris-station/env
+User=nestris
+Group=nestris
+SupplementaryGroups=video dialout
+# Recordings and the MQTT spool (exported to the service as $STATE_DIRECTORY).
+StateDirectory=nestris-station
+StateDirectoryMode=0750
+
+Restart=always
+RestartSec=3
+# The main loop pings every WatchdogSec/3; a wedged loop is restarted.
+WatchdogSec=30
+TimeoutStartSec=30
+TimeoutStopSec=15
+Nice=-5
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+# Only the capture device and USB serial ports (plus /dev/null & co.).
+DevicePolicy=closed
+DeviceAllow=char-video4linux rw
+DeviceAllow=char-ttyUSB rw
+DeviceAllow=char-ttyACM rw
+
+[Install]
+WantedBy=multi-user.target

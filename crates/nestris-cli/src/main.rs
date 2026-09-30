@@ -28,7 +28,8 @@ struct Cli {
 enum Cmd {
     /// Process a video source and stream per-frame JSON to the sinks.
     Run {
-        /// Input: video file path, or `dshow:<device name>` for live capture.
+        /// Input: video file path, `dshow:<device name>` (Windows) or
+        /// `v4l2:<device path>` (Linux) for live capture.
         #[arg(long)]
         input: String,
         /// Output JSONL file path.
@@ -124,7 +125,7 @@ enum Cmd {
         #[arg(long)]
         only: Option<String>,
     },
-    /// List DirectShow capture devices (Windows).
+    /// List capture devices (DirectShow on Windows, V4L2 elsewhere).
     ListDevices,
 }
 
@@ -209,7 +210,13 @@ fn main() -> Result<()> {
             only,
         } => verify::verify(fixtures, stages, frames, only),
         Cmd::ListDevices => {
-            print!("{}", capture_ffmpeg::list_devices()?);
+            if cfg!(windows) {
+                print!("{}", capture_ffmpeg::list_devices()?);
+            } else {
+                for device in capture_ffmpeg::list_v4l2_devices() {
+                    println!("v4l2:{}", device.display());
+                }
+            }
             Ok(())
         }
     }

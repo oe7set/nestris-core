@@ -1,0 +1,100 @@
+# nestris-station configuration  (/etc/nestris-station/station.toml)
+#
+# Every key is optional except capture.device and rfid.port (or
+# rfid.enabled = false). Unknown keys are rejected, so typos fail loudly.
+#
+# Precedence: this file < environment < --set.
+#   Environment: NESTRIS_STATION__<SECTION>__<KEY>=value
+#     e.g. NESTRIS_STATION__MQTT__HOST=192.168.1.10
+#   Command line: nestris-station run --set mqtt.host=192.168.1.10
+#
+# Validate with:  nestris-station check-config -c /etc/nestris-station/station.toml
+
+[station]
+# Unique per station: part of every MQTT topic and game id. [A-Za-z0-9_-]
+id = "station-1"
+name = "Station 1"
+# Recordings and the MQTT spool live below this directory. Empty = systemd
+# StateDirectory (/var/lib/nestris-station).
+state_dir = ""
+
+[capture]
+# Find devices with `nestris-station list-devices`. Prefer /dev/v4l/by-id/...
+# (stable across re-plugging) over /dev/videoN.
+device = "/dev/v4l/by-id/usb-MACROSILICON_USB_Video-video-index0"
+# Most USB capture sticks only deliver 60 fps at 720p as MJPEG.
+input_format = "mjpeg"
+width = 1280
+height = 720
+fps = 60
+# No frame for this many seconds restarts the capture.
+stall_timeout_s = 5.0
+backoff_max_s = 30.0
+
+[rfid]
+enabled = true
+# The ESP32 card reader (find it under /dev/serial/by-id/).
+port = "/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"
+baud = 115200
+# The reader reports every 750 ms; silence longer than this reconnects.
+stale_after_s = 3.0
+# A card taken off the reader up to this long before a game starts still
+# counts as that game's player.
+player_grace_s = 60.0
+
+[mqtt]
+host = "192.168.1.10"
+port = 1883
+# Empty = "nestris-<station.id>".
+client_id = ""
+username = ""
+# Keep the password out of this file: put it into password_file (mode 0600)
+# or set NESTRIS_STATION__MQTT__PASSWORD in /etc/nestris-station/env.
+password_file = ""
+# TLS needs a build with `--features tls`.
+tls = false
+ca_file = ""
+# Topics: <topic_prefix>/<station.id>/{status,player,live,event/...,cmd}
+topic_prefix = "retroverse/nestris"
+keepalive_s = 15
+live_max_hz = 5.0
+status_interval_s = 10.0
+reconnect_max_s = 30.0
+
+[recording]
+# Every game is also saved as a NestrisChamps .ngf.gz (evidence for disputes).
+enabled = true
+dir = ""
+gzip = true
+keep_days = 30
+max_gb = 20.0
+
+[spool]
+# Undelivered game results survive network outages and restarts here.
+dir = ""
+max_files = 10000
+
+[session]
+# Frames of game-over / menu screens before a game counts as ended (60 = 1 s).
+end_confirm_frames = 30
+# Shorter games (in-game frames) are discarded as false starts.
+min_game_frames = 120
+# A game is closed after this many seconds without a picture.
+signal_lost_end_s = 30.0
+
+[integrity]
+# The Select trick awards a flat 10 000 points.
+cheat_points = 10000
+cheat_slack = 250
+# Frames a new SCORE/LINES value must hold before it counts.
+confirm_frames = 10
+
+[log]
+# error | warn | info | debug | trace   (RUST_LOG overrides)
+level = "info"
+
+# [engine] takes the full recognition-engine configuration (see
+# docs/USAGE.md). The station already defaults to background acquisition and
+# downscaled candidate detection; only override what you need, e.g.:
+# [engine.recognition]
+# score_base = "dec"

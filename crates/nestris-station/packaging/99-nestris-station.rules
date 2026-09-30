@@ -1,0 +1,23 @@
+# Example udev rules for a nestris-station PC. Copy to
+# /etc/udev/rules.d/99-nestris-station.rules, adjust the IDs, then:
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Find the IDs of your hardware:
+#   udevadm info -a -n /dev/video0   | grep -E 'idVendor|idProduct|serial' | head
+#   udevadm info -a -n /dev/ttyUSB0  | grep -E 'idVendor|idProduct|serial' | head
+#
+# With these rules the config can use capture.device = "/dev/nestris-capture"
+# and rfid.port = "/dev/nestris-rfid" (stable across ports and re-plugging).
+# The /dev/v4l/by-id and /dev/serial/by-id links work too, without any rule.
+
+# USB capture stick (here: MacroSilicon MS2109, 534d:2109). index 0 is the
+# video node; the stick also exposes a metadata node.
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="534d", ATTRS{idProduct}=="2109", ATTR{index}=="0", SYMLINK+="nestris-capture", GROUP="video", MODE="0660"
+
+# ESP32 RFID reader (here: CP2102 USB-UART, 10c4:ea60; a CH340 is 1a86:7523).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="nestris-rfid", GROUP="dialout", MODE="0660"
+
+# Keep both devices out of USB autosuspend (a suspended capture stick drops
+# frames or disappears mid-game).
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="534d", ATTR{idProduct}=="2109", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="10c4", ATTR{idProduct}=="ea60", TEST=="power/control", ATTR{power/control}="on"

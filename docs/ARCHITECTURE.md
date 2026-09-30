@@ -26,6 +26,8 @@ a native CLI, a WebAssembly build with a browser GUI, and Android bindings.
 ```
 
 The dependency direction is strict and acyclic: `vision ← engine ← frontends`.
+The headless tournament daemon `nestris-station` is one more native
+frontend (see [STATION.md](STATION.md)).
 The engine performs **no I/O whatsoever** — no threads, no sockets, no files,
 no clocks. That single property is what lets the identical code run natively,
 in a Web Worker, and on Android.
@@ -141,6 +143,27 @@ output frames — statistics included — from a recording via the same
 `StatsEngine` as live analysis. See [NGF.md](NGF.md). Hosts wire it up:
 the CLI and desktop GUI record to `Documents\nestris-recordings`; the
 browser records in memory and downloads finished games.
+
+## Integrity checks (`integrity/`)
+
+`nestris-engine/src/integrity/` holds two per-game consumers of the output
+stream: the `CheatDetector` (score gains no legal NES scoring event
+explains, counted as Select-cheat inputs) and the `GameValidator` (an
+end-of-game report: partial game, score reconciliation, lines vs. clears,
+level progression, confidence, lost signal). Both are sans-io and
+deterministic, and neither is called from `FrameProcessor::process`, so the
+verified schema-v4 path is untouched; hosts run them next to the processor.
+
+## Tournament station (`nestris-station`)
+
+The headless Debian daemon composes the native pieces for an unattended
+station: `nestris-host`'s `CaptureSupervisor` (ffmpeg on its own thread with
+stall detection, restart backoff, and waiting for a re-plugged device), the
+processor with the background-recalibration thread, a session layer that
+turns output frames into games (start, player from the ESP32 RFID reader,
+cheat events, validated end), the NGF recorder, and an MQTT link with an
+on-disk spool for must-deliver results. systemd provides auto-start,
+restarts and a watchdog. See [STATION.md](STATION.md).
 
 ## The web architecture (worker + binary snapshots)
 

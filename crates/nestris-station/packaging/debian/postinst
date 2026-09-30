@@ -1,0 +1,28 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    # Unprivileged service account; device access via video/dialout.
+    if ! getent passwd nestris >/dev/null; then
+        adduser --system --group --no-create-home \
+            --home /var/lib/nestris-station nestris
+    fi
+    usermod -a -G video,dialout nestris || true
+
+    # The env file may hold the MQTT password.
+    if [ -f /etc/nestris-station/env ]; then
+        chown root:nestris /etc/nestris-station/env
+        chmod 0640 /etc/nestris-station/env
+    fi
+    chown root:nestris /etc/nestris-station/station.toml || true
+    chmod 0640 /etc/nestris-station/station.toml || true
+fi
+
+#DEBHELPER#
+
+if [ "$1" = "configure" ] && [ -z "$2" ]; then
+    echo "nestris-station installed and enabled at boot."
+    echo "Edit /etc/nestris-station/station.toml, validate it with"
+    echo "  nestris-station check-config"
+    echo "then start it:  sudo systemctl start nestris-station"
+fi

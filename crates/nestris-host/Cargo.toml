@@ -11,7 +11,10 @@ nestris-engine = { workspace = true }
 nestris-vision = { workspace = true }
 nestris-ngf = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+toml = "0.9"
+serde_yaml_ng = "0.10"
 # Dedicated half-size pool for background solves so their row-parallel
 # kernels never queue-contend with the pipeline thread's global-pool work.
 rayon = "1"

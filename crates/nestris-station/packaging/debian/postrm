@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+if [ "$1" = "purge" ]; then
+    rm -rf /var/lib/nestris-station
+    if getent passwd nestris >/dev/null; then
+        deluser --system nestris >/dev/null 2>&1 || true
+    fi
+fi

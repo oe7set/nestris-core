@@ -29,6 +29,25 @@ jobs:
       # unset; the committed testdata/cv goldens always run.
       - run: cargo test --workspace
 
+  # The Debian package of the headless station (Linux-only systemd/sd-notify
+  # paths get compiled and linted here; `cargo test --workspace` above runs
+  # its tests on both OSes).
+  station-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p nestris-station --all-targets --features tls -- -D warnings
+      - run: cargo install cargo-deb --locked
+      - run: cargo deb -p nestris-station
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nestris-station-deb
+          path: target/debian/*.deb
+
   wasm:
     runs-on: ubuntu-latest
     steps:

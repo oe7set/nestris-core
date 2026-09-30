@@ -56,14 +56,22 @@ Re-derives full schema-v4 frames (statistics included) from a recorded
 game — see [NGF.md](NGF.md) for the format, recording lifecycle, and the
 GUI replay viewers.
 
-### Live capture (Windows capture card / UVC device)
+### Live capture (capture card / UVC device)
 
 ```sh
+# Windows (DirectShow)
 nestris list-devices                     # ffmpeg's DirectShow device list
 nestris run --input "dshow:Game Capture HD60" --ws 127.0.0.1:8765
+
+# Linux (Video4Linux2)
+nestris list-devices                     # /dev/v4l/by-id/* and /dev/video*
+nestris run --input "v4l2:/dev/v4l/by-id/usb-...-video-index0" --ws 127.0.0.1:8765
 ```
 
 Live inputs are normalized to 1280×720 and timestamped with the wall clock.
+For an unattended tournament station (auto-start, reconnects, RFID player
+login, cheat detection, MQTT) use the `nestris-station` daemon instead —
+see [STATION.md](STATION.md).
 
 ### Benchmark
 
