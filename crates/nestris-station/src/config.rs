@@ -46,7 +46,8 @@ impl Default for StationSection {
 #[serde(default)]
 pub struct CaptureSection {
     /// `/dev/v4l/by-id/...` (or `v4l2:<path>`), `dshow:<name>` on Windows,
-    /// or `file:<path>` for tests.
+    /// a network stream URL (`http://`, `rtsp://`, ... e.g. a go2rtc
+    /// restream of the device), or `file:<path>` for tests.
     pub device: String,
     /// Device pixel format (`mjpeg`, `yuyv422`, ...); empty = driver default.
     pub input_format: String,
@@ -327,7 +328,10 @@ impl StationConfig {
         let device = self.capture.device.trim();
         if let Some(file) = device.strip_prefix("file:") {
             file.to_string()
-        } else if device.starts_with("v4l2:") || device.starts_with("dshow:") {
+        } else if device.starts_with("v4l2:")
+            || device.starts_with("dshow:")
+            || device.contains("://")
+        {
             device.to_string()
         } else {
             format!("v4l2:{device}")
@@ -539,6 +543,11 @@ mod tests {
         assert_eq!(cfg.capture_input(), "dshow:USB Video");
         cfg.capture.device = "/dev/video2".into();
         assert_eq!(cfg.capture_input(), "v4l2:/dev/video2");
+        let url = "http://127.0.0.1:1984/api/stream.mjpeg?src=nes";
+        cfg.capture.device = url.into();
+        assert_eq!(cfg.capture_input(), url);
+        cfg.capture.device = "rtsp://127.0.0.1:8554/nes".into();
+        assert_eq!(cfg.capture_input(), "rtsp://127.0.0.1:8554/nes");
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //! Chosen over linking FFmpeg (`ffmpeg-next`): no bindgen/LLVM build
 //! dependency on Windows, the ffmpeg binary handles every fixture codec
 //! (H264/AV1 in various containers), and live capture uses the same code
-//! path (`-f dshow` / `-f v4l2`).
+//! path (`-f dshow` / `-f v4l2`, or a network stream URL such as a local
+//! go2rtc MJPEG/RTSP restream).
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
@@ -203,7 +204,15 @@ pub enum InputKind {
     DirectShow,
     /// `v4l2:<device path>` (Linux Video4Linux2).
     V4l2,
+    /// A network stream (`rtsp://`, `http://`, ...), e.g. a go2rtc restream
+    /// of the capture device. Live: no probe, wall-clock timestamps.
+    Stream,
 }
+
+/// URL schemes treated as live network streams rather than files.
+const STREAM_SCHEMES: [&str; 8] = [
+    "rtsp://", "rtsps://", "rtmp://", "http://", "https://", "tcp://", "udp://", "srt://",
+];
 
 impl InputKind {
     pub fn of(input: &str) -> InputKind {
@@ -211,6 +220,10 @@ impl InputKind {
             InputKind::DirectShow
         } else if input.starts_with("v4l2:") {
             InputKind::V4l2
+        } else if STREAM_SCHEMES.iter().any(|scheme| {
+            input.len() > scheme.len() && input[..scheme.len()].eq_ignore_ascii_case(scheme)
+        }) {
+            InputKind::Stream
         } else {
             InputKind::File
         }
@@ -225,6 +238,55 @@ impl InputKind {
 /// can wait for a re-plugged device instead of hammering ffmpeg.
 pub fn device_path(input: &str) -> Option<&Path> {
     input.strip_prefix("v4l2:").map(Path::new)
+}
+
+/// ffmpeg arguments that open a live `input` (device or network stream) up
+/// to and including the fixed-size scale filter.
+fn live_input_args(input: &str, kind: InputKind, opts: &LiveOptions) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    let mut push = |items: &[&str]| args.extend(items.iter().map(|s| s.to_string()));
+    // Low latency: never buffer ahead of the engine.
+    push(&["-fflags", "nobuffer"]);
+    if kind == InputKind::Stream {
+        push(&["-flags", "low_delay"]);
+        let lower = input.to_ascii_lowercase();
+        if lower.starts_with("rtsp") {
+            // TCP: no lost RTP packets (torn frames) on a busy LAN.
+            push(&["-rtsp_transport", "tcp"]);
+        } else if lower.starts_with("http") {
+            // A hung server errors out instead of wedging the pipe; the
+            // supervisor restarts it.
+            push(&["-rw_timeout", "5000000"]);
+        }
+        push(&["-i", input, "-an"]);
+    } else {
+        push(&["-thread_queue_size", "64"]);
+        let (format, device) = match kind {
+            InputKind::DirectShow => ("dshow", format!("video={}", &input["dshow:".len()..])),
+            _ => ("v4l2", input["v4l2:".len()..].to_string()),
+        };
+        push(&["-f", format]);
+        if let Some(fmt) = opts.input_format.as_deref().filter(|f| !f.is_empty()) {
+            let key = if kind == InputKind::V4l2 {
+                "-input_format"
+            } else {
+                "-vcodec"
+            };
+            push(&[key, fmt]);
+        }
+        if opts.capture_width > 0 && opts.capture_height > 0 {
+            let size = format!("{}x{}", opts.capture_width, opts.capture_height);
+            push(&["-video_size", &size]);
+        }
+        if let Some(fps) = opts.fps.filter(|f| *f > 0.0) {
+            push(&["-framerate", &format!("{fps}")]);
+        }
+        push(&["-i", &device]);
+    }
+    // Live sources cannot be ffprobe'd before opening; scale to a known size
+    // so the frame layout is fixed.
+    push(&["-vf", &format!("scale={}:{}", opts.width, opts.height)]);
+    args
 }
 
 /// Lines of ffmpeg stderr kept for diagnostics.
@@ -245,8 +307,9 @@ impl DecoderKiller {
 }
 
 /// Streaming decoder: raw BGR24 frames read from an ffmpeg pipe.
-/// `dshow:<device name>` / `v4l2:<device path>` open a live device;
-/// anything else is a file/URL ffmpeg can read.
+/// `dshow:<device name>` / `v4l2:<device path>` open a live device,
+/// `rtsp://` / `http://` / ... a live network stream; anything else is a
+/// file ffmpeg can read.
 pub struct VideoDecoder {
     child: Arc<Mutex<Child>>,
     stdout: ChildStdout,
@@ -275,33 +338,7 @@ impl VideoDecoder {
         cmd.args(["-hide_banner", "-nostdin", "-v", "error"]);
         let mut info;
         if live {
-            // Low latency: never buffer ahead of the engine.
-            cmd.args(["-fflags", "nobuffer", "-thread_queue_size", "64"]);
-            let (format, device) = match kind {
-                InputKind::DirectShow => ("dshow", format!("video={}", &input["dshow:".len()..])),
-                _ => ("v4l2", input["v4l2:".len()..].to_string()),
-            };
-            cmd.args(["-f", format]);
-            if let Some(fmt) = opts.input_format.as_deref().filter(|f| !f.is_empty()) {
-                let key = if kind == InputKind::V4l2 {
-                    "-input_format"
-                } else {
-                    "-vcodec"
-                };
-                cmd.args([key, fmt]);
-            }
-            if opts.capture_width > 0 && opts.capture_height > 0 {
-                cmd.arg("-video_size")
-                    .arg(format!("{}x{}", opts.capture_width, opts.capture_height));
-            }
-            if let Some(fps) = opts.fps.filter(|f| *f > 0.0) {
-                cmd.arg("-framerate").arg(format!("{fps}"));
-            }
-            cmd.args(["-i", &device]);
-            // Live devices cannot be ffprobe'd before opening; scale to a
-            // known size so the frame layout is fixed.
-            cmd.arg("-vf")
-                .arg(format!("scale={}:{}", opts.width, opts.height));
+            cmd.args(live_input_args(input, kind, opts));
             info = VideoInfo {
                 width: opts.width,
                 height: opts.height,
@@ -406,5 +443,66 @@ impl Drop for VideoDecoder {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_kinds() {
+        assert_eq!(InputKind::of("v4l2:/dev/video0"), InputKind::V4l2);
+        assert_eq!(InputKind::of("dshow:USB Video"), InputKind::DirectShow);
+        assert_eq!(InputKind::of("/tmp/game.mp4"), InputKind::File);
+        assert_eq!(InputKind::of(r"C:\x\game.mp4"), InputKind::File);
+        for url in [
+            "http://127.0.0.1:1984/api/stream.mjpeg?src=nes",
+            "RTSP://127.0.0.1:8554/nes",
+            "srt://10.0.0.2:9000",
+        ] {
+            assert_eq!(InputKind::of(url), InputKind::Stream, "{url}");
+            assert!(InputKind::of(url).is_live());
+            assert!(device_path(url).is_none());
+        }
+    }
+
+    fn opts() -> LiveOptions {
+        LiveOptions {
+            input_format: Some("mjpeg".into()),
+            capture_width: 720,
+            capture_height: 576,
+            fps: Some(50.0),
+            width: 720,
+            height: 576,
+        }
+    }
+
+    #[test]
+    fn v4l2_args() {
+        let args = live_input_args("v4l2:/dev/video0", InputKind::V4l2, &opts());
+        assert_eq!(
+            args.join(" "),
+            "-fflags nobuffer -thread_queue_size 64 -f v4l2 -input_format mjpeg \
+             -video_size 720x576 -framerate 50 -i /dev/video0 -vf scale=720:576"
+        );
+    }
+
+    #[test]
+    fn stream_args_ignore_device_options() {
+        let url = "http://127.0.0.1:1984/api/stream.mjpeg?src=nes";
+        let args = live_input_args(url, InputKind::Stream, &opts()).join(" ");
+        assert_eq!(
+            args,
+            format!(
+                "-fflags nobuffer -flags low_delay -rw_timeout 5000000 -i {url} -an -vf scale=720:576"
+            )
+        );
+        let args = live_input_args("rtsp://h/nes", InputKind::Stream, &opts()).join(" ");
+        assert!(
+            args.contains("-rtsp_transport tcp -i rtsp://h/nes"),
+            "{args}"
+        );
+        assert!(!args.contains("-input_format"));
     }
 }

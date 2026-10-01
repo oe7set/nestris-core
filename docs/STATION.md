@@ -23,24 +23,37 @@ ESP32 RFID ─(USB serial JSON)─► player ───────────�
 
 ## Install on Debian
 
-Build on the station itself (or any Debian/Ubuntu machine of the same
-architecture):
+German step-by-step guide (build, copy, configure, go2rtc, checklist):
+[STATION_ANLEITUNG.de.md](STATION_ANLEITUNG.de.md).
+
+Build the package once and copy only the `.deb` to every station. On
+Windows with Docker Desktop:
+
+```powershell
+./tools/build-station-deb.ps1        # → dist/nestris-station_*_amd64.deb (-Tls for MQTT over TLS)
+```
+
+It builds in a Debian bookworm container, so the package runs on Debian 12
+and 13. On any Debian/Ubuntu machine (or WSL) instead:
 
 ```sh
-sudo apt install build-essential pkg-config ffmpeg curl
+sudo apt install build-essential pkg-config curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust toolchain
 cargo install cargo-deb
-
-git clone https://github.com/ErwinSpitaler/nestris-core && cd nestris-core
 cargo deb -p nestris-station          # → target/debian/nestris-station_*.deb
-sudo apt install ./target/debian/nestris-station_*.deb
+```
+
+On the station:
+
+```sh
+sudo apt install ./nestris-station_*.deb     # pulls in ffmpeg
 ```
 
 The package installs `/usr/bin/nestris-station`, the systemd unit (enabled
 at boot, not started), `/etc/nestris-station/station.toml` and
 `/etc/nestris-station/env` (both kept on upgrades), and creates the
 `nestris` service user (groups `video`, `dialout`). For MQTT over TLS build
-with `cargo deb -p nestris-station --features tls`.
+with `--features tls`.
 
 Then:
 
@@ -74,6 +87,26 @@ Most cheap USB capture sticks only deliver 1280×720 at 60 fps as MJPEG
 (`capture.input_format = "mjpeg"`, the default). `v4l2-ctl --list-formats-ext
 -d <device>` (package `v4l-utils`) shows what a device supports.
 
+### Capture through go2rtc
+
+A capture device can only be opened by one process. To keep a browser
+preview for debugging, let go2rtc own the device and point the station at
+the local restream:
+
+```toml
+[capture]
+device = "http://127.0.0.1:1984/api/stream.mjpeg?src=nes"   # or rtsp://127.0.0.1:8554/nes
+```
+
+Network URLs (`http(s)://`, `rtsp(s)://`, `rtmp://`, `tcp://`, `udp://`,
+`srt://`) are live sources: no probing, wall-clock timestamps, frames
+dropped rather than queued, and a dropped stream is reopened with backoff.
+`input_format`/`width`/`height`/`fps` are ignored for them;
+`scale_width`/`scale_height` still apply. HTTP MJPEG passes the device's JPEGs through
+unchanged; RTSP is read over TCP. For tournament use prefer the device
+directly (stop go2rtc, since it grabs the device as soon as someone
+opens the stream).
+
 ## Configuration
 
 `/etc/nestris-station/station.toml` — the annotated template is
@@ -98,7 +131,7 @@ password in `mqtt.password_file` (mode 0600) or as
 | Section | Key settings |
 |---|---|
 | `station` | `id` (topic + game-id prefix), `name`, `state_dir` (default: systemd `StateDirectory`, `/var/lib/nestris-station`) |
-| `capture` | `device`, `input_format`, `width`/`height`/`fps`, `stall_timeout_s` (5), `backoff_max_s` (30) |
+| `capture` | `device` (device path or stream URL), `input_format`, `width`/`height`/`fps`, `scale_width`/`scale_height`, `stall_timeout_s` (5), `backoff_max_s` (30) |
 | `rfid` | `enabled`, `port`, `baud` (115200), `stale_after_s` (3), `player_grace_s` (60) |
 | `mqtt` | `host`, `port`, `username`, `password_file`, `tls`/`ca_file`, `topic_prefix` (`retroverse/nestris`), `live_max_hz` (5), `status_interval_s` (10) |
 | `recording` | `enabled`, `dir`, `keep_days` (30), `max_gb` (20) |

@@ -12,3 +12,4 @@ testdata/stages/
 *.log
 _scratch/
 .DS_Store
+/dist/

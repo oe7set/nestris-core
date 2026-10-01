@@ -22,11 +22,22 @@ state_dir = ""
 # Find devices with `nestris-station list-devices`. Prefer /dev/v4l/by-id/...
 # (stable across re-plugging) over /dev/videoN.
 device = "/dev/v4l/by-id/usb-MACROSILICON_USB_Video-video-index0"
-# Most USB capture sticks only deliver 60 fps at 720p as MJPEG.
+# Or read a network stream instead of the device, e.g. a local go2rtc
+# restream for debugging (go2rtc then owns the device; a capture device can
+# only be opened by one process). input_format/width/height/fps are ignored
+# for streams, scale_width/scale_height still apply.
+#   device = "http://127.0.0.1:1984/api/stream.mjpeg?src=nes"
+#   device = "rtsp://127.0.0.1:8554/nes"
+# Most USB capture sticks only deliver 60 fps at 720p as MJPEG. A PAL
+# console on a MacroSilicon stick: width = 720, height = 576, fps = 50.
 input_format = "mjpeg"
 width = 1280
 height = 720
 fps = 60
+# Frames are scaled to this size for the engine; keep it equal to the
+# capture size (no distorting up-scale), e.g. 720 x 576 for PAL.
+scale_width = 1280
+scale_height = 720
 # No frame for this many seconds restarts the capture.
 stall_timeout_s = 5.0
 backoff_max_s = 30.0
