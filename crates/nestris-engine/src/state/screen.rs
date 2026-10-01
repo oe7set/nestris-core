@@ -183,12 +183,18 @@ impl ScreenClassifier {
                         // HUD visible: curtain / normal pause / in-game.
                         Some(canon) => {
                             self.menu_streak = 0;
-                            self.classify_gameplay(canon, prev_state, &mut signals, canon_gray, true)
-                                .unwrap_or(ClassificationResult {
-                                    state: GameState::InGame,
-                                    confidence: 0.6,
-                                    signals,
-                                })
+                            self.classify_gameplay(
+                                canon,
+                                prev_state,
+                                &mut signals,
+                                canon_gray,
+                                true,
+                            )
+                            .unwrap_or(ClassificationResult {
+                                state: GameState::InGame,
+                                confidence: 0.6,
+                                signals,
+                            })
                         }
                         // Gameplay without a usable lock: nothing to read
                         // until the lock re-acquires.
@@ -214,9 +220,7 @@ impl ScreenClassifier {
             // layout may take the HUD checks (a transition, heavy noise);
             // anything else means the geometry is stale for this screen and
             // the frame box below decides.
-            let ingame = matcher
-                .score_of(&grid, ScreenKind::InGame)
-                .unwrap_or(0.0) as f64;
+            let ingame = matcher.score_of(&grid, ScreenKind::InGame).unwrap_or(0.0) as f64;
             signals.insert("sig_ingame", ingame);
             if let Some(canon) = canon
                 && ingame >= GAMEPLAY_LAYOUT_MIN
@@ -420,7 +424,11 @@ impl ScreenClassifier {
             && (!signature || self.outside_band_fill(gray) < PAUSE_OUTSIDE_BAND_MAX);
         // Signature mode: the curtain fills whole rows from the top; full
         // rows never survive in play (they clear), whatever the palette.
-        let curtain_rows = if signature { self.full_rows_from_top(gray) } else { 0 };
+        let curtain_rows = if signature {
+            self.full_rows_from_top(gray)
+        } else {
+            0
+        };
         signals.insert("curtain_rows", curtain_rows as f64);
 
         signals.insert("hud_from_labels", if from_labels { 1.0 } else { 0.0 });
@@ -627,7 +635,11 @@ impl ScreenClassifier {
             bright += row.iter().filter(|&&v| v > 64).count();
             total += row.len();
         }
-        if total == 0 { 0.0 } else { bright as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            bright as f64 / total as f64
+        }
     }
 
     /// Consecutive completely filled playfield rows counted from the top:
@@ -762,7 +774,6 @@ fn raw_stats(bgr: &Image) -> (f64, f64) {
     let mean = sum / n;
     (mean, (sumsq / n - mean * mean).max(0.0).sqrt())
 }
-
 
 fn mean_u8(data: &[u8]) -> f64 {
     if data.is_empty() {

@@ -154,7 +154,11 @@ fn replay_readings_reproduces_python_output_exactly() {
         }
         let name = dir.file_name().unwrap().to_string_lossy().to_string();
 
-        let mut fusion = FusionEngine::new(FusionConfig::default());
+        // Oracle behavior: a new game fires on its first in-game frame.
+        let mut fusion = FusionEngine::new(FusionConfig {
+            new_game_confirm_frames: 0,
+            ..FusionConfig::default()
+        });
         let mut plausibility = PlausibilityFilter::new(PlausibilityConfig::default());
         let mut stats = StatsEngine::new();
 

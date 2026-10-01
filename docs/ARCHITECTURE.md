@@ -74,13 +74,24 @@ synchronous entry point. For each BGR frame:
    (with the optional barrel-undistortion composed in). Per frame this makes
    rectification a single gather pass.
 
-3. **Screen classification** (`state/screen.rs`) — cheap, explainable image
-   signatures decide `title / type_select / level_select / in_game / paused /
-   game_over / highscore_entry / no_signal`. Two evidence paths are fused:
-   menu signatures on a ~160×120 subsample of the *raw* frame (so menus stay
-   reachable while the geometry lock is held between games), and gameplay
-   signatures on the canonical frame (HUD label re-match, playfield
-   structure, both pause styles, the game-over curtain).
+3. **Screen classification** (`state/screen.rs`, `state/screen_sig.rs`)
+   decides `title / type_select / level_select / in_game / paused /
+   game_over / highscore_entry / no_signal / unknown`. Every NES screen is
+   drawn from 8×8 tiles, so each one is recognized by its **tile signature**:
+   the mean luma of the 32×30 tiles, compared with a masked Pearson
+   correlation (gain/offset invariant) against embedded references
+   (`assets/screens/`, built from labelled captures by `nestris screens
+   refs`). Tiles that change (cursors, digits, high-score names, the stack,
+   the event ROM's title logo) are masked. References cover the title, game
+   type, level select, high-score entry, A- and B-type endings (reported as
+   `game_over`), the blanked pause, boot/copyright screens (`unknown`) and
+   the gameplay layout. The grid comes from the canonical frame when locked,
+   else from the frame rectified with the last good geometry, else from an
+   estimated frame box (pooled 16×15 grid). Gameplay frames then go through
+   the HUD/playfield checks (game-over curtain as full striped rows from the
+   top, hidden-playfield pause). Cost: one pass over the 256×240 luma plus a
+   few thousand multiply-adds per frame. `screen.mode = "legacy"` restores
+   the Python port's pixel-fraction heuristics (used by `nestris verify`).
 
 4. **Recognition** (`recognition/`) — only on gameplay frames:
    - `digits.rs` — SCORE/LINES/LEVEL by normalized-correlation template

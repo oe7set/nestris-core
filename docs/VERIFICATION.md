@@ -89,6 +89,10 @@ against `output.jsonl` under this policy:
 - **Confidences and pace floats** are reported but not gated: they sit
   directly downstream of the RANSAC geometry, whose RNG legitimately differs
   across languages.
+- Oracle-parity mode pins the screen classifier to `screen.mode = "legacy"`
+  and `fusion.new_game_confirm_frames = 0` (the Python behavior). The
+  default signature classifier is Rust-only and verified separately, see
+  *Screen classification (signature mode)* below.
 
 ```sh
 nestris verify --fixtures $env:NESTRIS_FIXTURES_DIR            # all fixtures
@@ -175,3 +179,58 @@ machine, production configuration (background solves off-thread):
 Browser (engine in a Web Worker, binary snapshot boundary, SIMD build):
 the page thread only captures ImageBitmaps and paints — engine time shows
 in the web app's perf HUD (p50/p95 per frame plus dropped-frame count).
+
+## Screen classification (signature mode)
+
+The default classifier (`screen.mode = "signature"`, see
+`docs/ARCHITECTURE.md`) is Rust-only, so Gate 4 runs the legacy port. It is
+scored instead against hand-labelled timelines of real station captures in
+`testdata/screens/*.labels.tsv`. The captures come from an MS2109 card, a PAL
+console and the event ROM with the Retroverse title logo. They were muxed at
+25 fps but recorded at 50 fps, hence `--fps 50`.
+
+```sh
+nestris screens eval --input ../tetrisvideo/aufnahme_20260930-231217.mkv --fps 50 \
+    --labels testdata/screens/aufnahme_20260930-231217.labels.tsv
+NESTRIS_SCREEN_VIDEOS=D:/Projekte/Retroverse/tetrisvideo cargo test --release -p nestris-cli -- --ignored station_captures   # absolute path
+```
+
+Frames within a segment's margin of a label boundary are not scored.
+
+**Results (2026-10-01)**
+
+| Capture | Content | Scored frames | Agreement | Game starts |
+|---|---|---|---|---|
+| `aufnahme_20260930-231217` | 19 min: 5 games, 37 s pause, rocket ending, high-score entry, menu hopping | 56 774 | 100.00 % | the 4 real ones |
+| `aufnahme_20260930-233153` | 2.4 min from power-on: flash-cart menu, copyright screen, menus, 2 games, pauses | 5 137 | 100.00 % | the 2 real ones |
+
+The legacy classifier gets these captures wrong:
+- Blanked pauses come out as `no_signal`, so a station ended the game with `signal_lost` after 30 s of pause.
+- Level/type select are read as `in_game`/`paused`, with garbage fields and false `new_game` events.
+- Copyright and flash-cart screens come out as `title`.
+- After the dark-palette curtain it reports `in_game`.
+
+**Foreign footage.** The signature classifier finds the same games as the legacy classifier, without its false starts:
+- `tetris_01`: B-type games, with the B-type ending as its own reference.
+- `NES NTSC Tetris (Capture test w⁄ XCAPTURE-1)`.
+
+**Performance.** `nestris bench` on the 19 min capture, p50 ms/frame:
+
+| | Gameplay | Menus (station config) | Pause (station config) |
+|---|---|---|---|
+| signature | 2.62 | 0.77 | 0.66 |
+| legacy | 2.90 | 0.98 | 0.98 |
+
+The signature classifier replaces the legacy HSV pass over the raw frame with
+one pass over the canonical luma.
+
+**Rebuilding the references** after a ROM or capture change: add labelled
+ranges to `testdata/screens/refs.json`, then run
+
+```sh
+nestris screens refs --spec testdata/screens/refs.json --videos ../tetrisvideo \
+    --out crates/nestris-engine/assets/screens --samples target/screen-samples
+```
+
+`--samples` writes one rectified frame per screen, plus a mask view with
+compared tiles in gray and masked tiles in red.

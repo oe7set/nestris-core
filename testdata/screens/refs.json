@@ -1,5 +1,5 @@
 {
-  "_comment": "Ranges (real seconds, optional frame stride) of the tetrisvideo captures that build crates/nestris-engine/assets/screens. Regenerate: nestris screens refs --spec testdata/screens/refs.json --videos ../tetrisvideo --out crates/nestris-engine/assets/screens",
+  "_comment": "Ranges (real seconds, optional frame stride) of the tetrisvideo captures that build crates/nestris-engine/assets/screens. A name `<kind>.<variant>` adds another reference for the same screen. Regenerate: nestris screens refs --spec testdata/screens/refs.json --videos ../tetrisvideo --out crates/nestris-engine/assets/screens",
   "fps": 50,
   "std_max": 10,
   "inputs": [
@@ -7,25 +7,187 @@
       "file": "aufnahme_20260930-231217.mkv",
       "geometry_at": 100,
       "refs": {
-        "ending": [[835, 945, 10]],
-        "highscore_entry": [[951.5, 954.5, 2]],
-        "title": [[960, 966, 5], [972, 981, 5], [1036, 1053, 10], [1059, 1068, 5]],
-        "type_select": [[984, 990, 3], [1071, 1077, 3], [1083, 1086, 3]],
-        "level_select": [[993, 1002, 5], [1095, 1098, 3]],
-        "in_game": [[300, 820, 50]],
-        "pause": [[203, 237, 10]]
+        "ending": [
+          [
+            835,
+            945,
+            10
+          ]
+        ],
+        "highscore_entry": [
+          [
+            951.5,
+            954.5,
+            2
+          ]
+        ],
+        "title": [
+          [
+            960,
+            966,
+            5
+          ],
+          [
+            972,
+            981,
+            5
+          ],
+          [
+            1036,
+            1053,
+            10
+          ],
+          [
+            1059,
+            1068,
+            5
+          ]
+        ],
+        "type_select": [
+          [
+            984,
+            990,
+            3
+          ],
+          [
+            1071,
+            1077,
+            3
+          ],
+          [
+            1083,
+            1086,
+            3
+          ]
+        ],
+        "level_select": [
+          [
+            993,
+            1002,
+            5
+          ],
+          [
+            1095,
+            1098,
+            3
+          ]
+        ],
+        "in_game": [
+          [
+            300,
+            820,
+            50
+          ]
+        ],
+        "pause": [
+          [
+            203,
+            237,
+            10
+          ]
+        ]
       }
     },
     {
       "file": "aufnahme_20260930-233153.mkv",
       "geometry_at": 60,
       "refs": {
-        "boot": [[16, 18.5, 3], [21.5, 28, 3]],
-        "title": [[11, 13, 3], [29.5, 31, 3]],
-        "type_select": [[32.5, 36, 3], [39.5, 41, 3]],
-        "level_select": [[42.5, 49, 5], [128, 142, 5]],
-        "in_game": [[52, 64, 25], [116, 122, 25]],
-        "pause": [[69.5, 72.5, 5]]
+        "boot": [
+          [
+            16,
+            18.5,
+            3
+          ],
+          [
+            21.5,
+            28,
+            3
+          ]
+        ],
+        "title": [
+          [
+            11,
+            13,
+            3
+          ],
+          [
+            29.5,
+            31,
+            3
+          ]
+        ],
+        "type_select": [
+          [
+            32.5,
+            36,
+            3
+          ],
+          [
+            39.5,
+            41,
+            3
+          ]
+        ],
+        "level_select": [
+          [
+            42.5,
+            49,
+            5
+          ],
+          [
+            128,
+            142,
+            5
+          ]
+        ],
+        "in_game": [
+          [
+            52,
+            64,
+            25
+          ],
+          [
+            116,
+            122,
+            25
+          ]
+        ],
+        "pause": [
+          [
+            69.5,
+            72.5,
+            5
+          ]
+        ]
+      }
+    },
+    {
+      "file": "tetris_01.mp4",
+      "fps": null,
+      "geometry_at": 100,
+      "refs": {
+        "ending.b_type": [
+          [
+            1062,
+            1072,
+            5
+          ],
+          [
+            1166,
+            1176,
+            5
+          ],
+          [
+            1408,
+            1418,
+            5
+          ],
+          [
+            1588,
+            1598,
+            5
+          ]
+        ]
       }
     }
   ]

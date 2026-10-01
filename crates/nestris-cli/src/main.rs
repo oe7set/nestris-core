@@ -117,6 +117,9 @@ enum Cmd {
         /// Real frame rate of a file muxed with a wrong one.
         #[arg(long)]
         fps: Option<f64>,
+        /// Engine config overrides (`path=value`, repeatable).
+        #[arg(long = "set", value_name = "PATH=VALUE")]
+        set: Vec<String>,
     },
     /// Screen-signature tools: build references, evaluate, dump frames.
     Screens {
@@ -216,11 +219,13 @@ fn main() -> Result<()> {
             warmup,
             acquire,
             fps,
+            set,
         } => {
             if acquire > 0 {
                 bench_acquire(&input, start, frames, acquire)
             } else {
-                bench(&input, start, frames, warmup, fps)
+                let cfg = config_load::load(None, None, &set)?;
+                bench(&input, start, frames, warmup, fps, cfg)
             }
         }
         Cmd::Screens { cmd } => screens::run(cmd),
@@ -377,9 +382,16 @@ fn replay(
     Ok(())
 }
 
-fn bench(input: &str, start: f64, frames: u64, warmup: u64, fps: Option<f64>) -> Result<()> {
+fn bench(
+    input: &str,
+    start: f64,
+    frames: u64,
+    warmup: u64,
+    fps: Option<f64>,
+    cfg: EngineConfig,
+) -> Result<()> {
     let mut decoder = screens::open(input, start, fps)?;
-    let mut processor = FrameProcessor::new(engine_config(false));
+    let mut processor = FrameProcessor::new(cfg);
     let mut times_ms: Vec<f64> = Vec::new();
     let mut fills: Vec<usize> = Vec::new();
     let mut locked_at: Option<u64> = None;

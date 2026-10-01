@@ -117,6 +117,15 @@ pub fn run(cmd: ScreensCmd) -> Result<()> {
                 mismatches,
                 sig_stats,
             )
+            .map(|s| {
+                if s.scored > 0 {
+                    eprintln!(
+                        "accuracy {:.4}, {} game starts",
+                        s.accuracy(),
+                        s.new_games.len()
+                    );
+                }
+            })
         }
         ScreensCmd::Dump {
             input,
@@ -240,11 +249,7 @@ impl Accum {
             let n = grids.len() as f64;
             for (i, s) in std.iter_mut().enumerate() {
                 let m = grids.iter().map(|g| g[i] as f64).sum::<f64>() / n;
-                let var = grids
-                    .iter()
-                    .map(|g| (g[i] as f64 - m).powi(2))
-                    .sum::<f64>()
-                    / n;
+                let var = grids.iter().map(|g| (g[i] as f64 - m).powi(2)).sum::<f64>() / n;
                 *s += n * var.sqrt();
             }
         }
@@ -264,7 +269,9 @@ fn refs(spec_path: &Path, videos: &Path, out: &Path, samples: Option<&Path>) -> 
     )?;
     let fps = spec["fps"].as_f64();
     let std_max = spec["std_max"].as_f64().unwrap_or(10.0);
-    let mut acc: BTreeMap<&'static str, (ScreenKind, Accum)> = BTreeMap::new();
+    // Keyed by reference name: `<kind>` or `<kind>.<variant>` (several
+    // references per screen, e.g. the A- and B-type endings).
+    let mut acc: BTreeMap<String, (ScreenKind, Accum)> = BTreeMap::new();
 
     for (input_no, input) in spec["inputs"]
         .as_array()
@@ -275,13 +282,19 @@ fn refs(spec_path: &Path, videos: &Path, out: &Path, samples: Option<&Path>) -> 
         let file = videos.join(input["file"].as_str().context("input.file")?);
         let file = file.to_string_lossy().to_string();
         let geometry_at = input["geometry_at"].as_f64().context("input.geometry_at")?;
+        // Per-input override; `null` = the container's own rate.
+        let fps = match input.get("fps") {
+            Some(v) => v.as_f64(),
+            None => fps,
+        };
         let rectifier = acquire_rectifier(&file, geometry_at, fps)?;
         eprintln!("{file}: geometry locked at {geometry_at}s");
         let refs = input["refs"].as_object().context("input.refs")?;
         for (name, ranges) in refs {
-            let kind = ScreenKind::from_name(name)
-                .with_context(|| format!("unknown screen kind {name}"))?;
-            let (_, a) = acc.entry(kind.name()).or_insert((kind, Accum::new()));
+            let kind_name = name.split('.').next().unwrap_or(name);
+            let kind = ScreenKind::from_name(kind_name)
+                .with_context(|| format!("unknown screen kind {kind_name}"))?;
+            let (_, a) = acc.entry(name.clone()).or_insert((kind, Accum::new()));
             for range in ranges.as_array().context("ranges")? {
                 let r = range.as_array().context("range")?;
                 let start = r[0].as_f64().context("range start")?;
@@ -347,11 +360,7 @@ fn mask_view(r: &ScreenRef) -> Image {
 /// PNG writer for 1-channel (gray) or 3-channel BGR images.
 pub fn write_png(path: &Path, img: &Image) -> Result<()> {
     let file = fs::File::create(path).with_context(|| format!("create {}", path.display()))?;
-    let mut encoder = png::Encoder::new(
-        BufWriter::new(file),
-        img.width as u32,
-        img.height as u32,
-    );
+    let mut encoder = png::Encoder::new(BufWriter::new(file), img.width as u32, img.height as u32);
     encoder.set_depth(png::BitDepth::Eight);
     let data = match img.channels {
         1 => {
@@ -369,6 +378,19 @@ pub fn write_png(path: &Path, img: &Image) -> Result<()> {
     };
     encoder.write_header()?.write_image_data(&data)?;
     Ok(())
+}
+
+/// What `eval` measured.
+pub struct EvalSummary {
+    pub new_games: Vec<f64>,
+    pub scored: u64,
+    pub correct: u64,
+}
+
+impl EvalSummary {
+    pub fn accuracy(&self) -> f64 {
+        self.correct as f64 / self.scored.max(1) as f64
+    }
 }
 
 struct Segment {
@@ -389,7 +411,11 @@ fn parse_labels(path: &Path) -> Result<Vec<Segment>> {
         }
         let cols: Vec<&str> = line.split_whitespace().collect();
         if cols.len() < 3 {
-            bail!("{}:{}: expected `start end state [margin]`", path.display(), n + 1);
+            bail!(
+                "{}:{}: expected `start end state [margin]`",
+                path.display(),
+                n + 1
+            );
         }
         let states = if cols[2] == "*" {
             Vec::new()
@@ -431,7 +457,7 @@ fn eval(
     timeline: u64,
     mismatches: usize,
     sig_stats: bool,
-) -> Result<()> {
+) -> Result<EvalSummary> {
     let segments = labels.map(parse_labels).transpose()?.unwrap_or_default();
     let background = cfg.calibration.background_recalibration;
     let mut decoder = open(input, 0.0, fps)?;
@@ -501,8 +527,13 @@ fn eval(
             .collect::<Vec<_>>()
             .join(", ")
     );
+    let mut summary = EvalSummary {
+        new_games: new_games.clone(),
+        scored: 0,
+        correct: 0,
+    };
     if segments.is_empty() {
-        return Ok(());
+        return Ok(summary);
     }
 
     // Score: scored frames lie inside a labelled segment, away from its edges.
@@ -550,6 +581,8 @@ fn eval(
         "-- overall: {:.2}% of {total} scored frames",
         100.0 * correct as f64 / total.max(1) as f64
     );
+    summary.scored = total;
+    summary.correct = correct;
 
     let mut bad: Vec<(usize, usize)> = runs(&frames, |f| f.1.clone())
         .into_iter()
@@ -605,7 +638,7 @@ fn eval(
             );
         }
     }
-    Ok(())
+    Ok(summary)
 }
 
 fn runs<T>(items: &[T], key: impl Fn(&T) -> String) -> Vec<(usize, usize, String)> {
@@ -673,4 +706,56 @@ fn dump(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Full station captures against their hand labels. Needs the videos:
+    /// `NESTRIS_SCREEN_VIDEOS=<absolute dir with aufnahme_*.mkv> cargo test --release
+    /// -p nestris-cli -- --ignored station_captures`.
+    #[test]
+    #[ignore = "needs the capture videos (NESTRIS_SCREEN_VIDEOS)"]
+    fn station_captures() {
+        let Ok(dir) = std::env::var("NESTRIS_SCREEN_VIDEOS") else {
+            eprintln!("NESTRIS_SCREEN_VIDEOS not set, skipped");
+            return;
+        };
+        let labels = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/screens");
+        // (capture, real game starts)
+        for (name, starts) in [
+            ("aufnahme_20260930-233153", vec![50.5, 115.1]),
+            (
+                "aufnahme_20260930-231217",
+                vec![162.75, 1005.35, 1056.05, 1099.75],
+            ),
+        ] {
+            let input = PathBuf::from(&dir).join(format!("{name}.mkv"));
+            let summary = eval(
+                &input.to_string_lossy(),
+                Some(50.0),
+                Some(&labels.join(format!("{name}.labels.tsv"))),
+                nestris_engine::config::EngineConfig::default(),
+                0,
+                10,
+                false,
+            )
+            .unwrap();
+            assert!(
+                summary.accuracy() >= 0.995,
+                "{name}: {:.4}",
+                summary.accuracy()
+            );
+            assert_eq!(
+                summary.new_games.len(),
+                starts.len(),
+                "{name}: {:?}",
+                summary.new_games
+            );
+            for (got, want) in summary.new_games.iter().zip(&starts) {
+                assert!((got - want).abs() < 0.5, "{name}: start {got} vs {want}");
+            }
+        }
+    }
 }

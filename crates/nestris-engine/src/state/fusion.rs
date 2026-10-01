@@ -569,3 +569,51 @@ fn fuse_numeric(
     }
     tracked.value
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reading(state: GameState) -> RawReading {
+        RawReading {
+            state,
+            state_confidence: 0.9,
+            ..Default::default()
+        }
+    }
+
+    fn starts(cfg: FusionConfig, states: &[(GameState, usize)]) -> Vec<usize> {
+        let mut f = FusionEngine::new(cfg);
+        let mut out = Vec::new();
+        let mut i = 0;
+        for &(state, n) in states {
+            for _ in 0..n {
+                if f.update(&reading(state)).is_new_game {
+                    out.push(i);
+                }
+                i += 1;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn stray_ingame_frames_between_menus_do_not_start_a_game() {
+        let seq = [
+            (GameState::LevelSelect, 20),
+            (GameState::InGame, 3),
+            (GameState::TypeSelect, 20),
+            (GameState::InGame, 40),
+        ];
+        // Oracle behavior: the stray frames already start a game.
+        let oracle = FusionConfig {
+            new_game_confirm_frames: 0,
+            ..FusionConfig::default()
+        };
+        assert_eq!(starts(oracle, &seq).len(), 2);
+        // Confirmed: only the real game.
+        let fired = starts(FusionConfig::default(), &seq);
+        assert_eq!(fired.len(), 1, "{fired:?}");
+        assert!(fired[0] >= 43, "{fired:?}");
+    }
+}

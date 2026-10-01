@@ -91,6 +91,32 @@ acquisition config (background solver + 640-wide candidate detection) and
 reports time-to-lock plus the per-frame latency while unlocked — the
 number that decides whether a live preview stutters during acquisition.
 
+### Captures with a wrong frame rate
+
+Some recorders mux a 50 fps capture as 25 fps, so the file plays at half
+speed and every timestamp is doubled. `--fps` sets the real rate for `run`,
+`bench` and `screens` (timestamps and `--start` use it):
+
+```sh
+nestris run --input aufnahme.mkv --fps 50 --jsonl out.jsonl
+# or fix the file once (stream copy, no re-encode):
+ffmpeg -r 50 -i aufnahme.mkv -c copy aufnahme_50fps.mkv
+```
+
+### Screen-classifier tools
+
+```sh
+nestris screens eval --input x.mkv --fps 50 --labels x.labels.tsv --timeline 25
+nestris screens dump --input x.mkv --fps 50 --at 12.5,30 --geometry-at 100 --out frames/
+nestris screens refs --spec testdata/screens/refs.json --videos ../tetrisvideo \
+    --out crates/nestris-engine/assets/screens
+```
+
+`eval` prints the state timeline, the detected game starts and, with a label
+file, a confusion matrix and the longest mismatch runs. `dump` writes raw and
+rectified frames plus the signature scores of each screen. See
+`docs/VERIFICATION.md` (*Screen classification*).
+
 ### Verify against the Python oracle
 
 See [VERIFICATION.md](VERIFICATION.md).
@@ -129,6 +155,15 @@ confidence_decay = 0.9             # per-frame decay while holding a value
 min_report_confidence = 0.4        # below = field reported as null
 enforce_monotonic = true           # score/lines/level never decrease in-game
 new_game_menu_frames = 10          # menu frames required to arm a new game
+new_game_confirm_frames = 5        # in-game frames confirming an armed new
+                                   # game (0 = first frame, oracle behavior)
+
+[screen]
+mode = "signature"                 # "signature" (NES-tile layout matching of
+                                   # every screen) | "legacy" (Python port)
+match_threshold = 0.8              # min correlation of a signature match
+match_margin = 0.05                # min lead over the runner-up screen
+menu_confirm_frames = 4            # menu matches needed to leave a game
 
 [plausibility]
 enabled = true

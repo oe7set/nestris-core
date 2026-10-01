@@ -9,7 +9,7 @@
 //! masked out of the reference. A full grid costs one pass over the 256×240
 //! canonical luma plus a few thousand multiply-adds per reference.
 //!
-//! References live in `assets/screens/<kind>.png`: a 32×60 grayscale image,
+//! References live in `assets/screens/<kind>[.<variant>].png`: a 32×60 grayscale image,
 //! tile means in the top 30 rows and the mask (255 = compared) in the bottom
 //! 30. They are generated from labelled captures by `nestris screens refs`.
 
@@ -124,7 +124,9 @@ impl TileGrid {
         let (w, h) = (gray.width, gray.height);
         let mut sums = vec![0u32; TILES];
         let mut counts = vec![0u32; TILES];
-        let col_of: Vec<usize> = (0..w).map(|x| (x * COLS / w.max(1)).min(COLS - 1)).collect();
+        let col_of: Vec<usize> = (0..w)
+            .map(|x| (x * COLS / w.max(1)).min(COLS - 1))
+            .collect();
         for y in 0..h {
             let row = (y * ROWS / h.max(1)).min(ROWS - 1);
             let base = row * COLS;
@@ -387,10 +389,12 @@ fn best_of(scores: &[(ScreenKind, f32)]) -> Option<ScreenMatch> {
         .iter()
         .enumerate()
         .max_by(|a, b| a.1.1.total_cmp(&b.1.1))?;
+    // Runner-up among the *other* screens (variants of the same screen
+    // do not compete).
     let second = scores
         .iter()
         .enumerate()
-        .filter(|(i, _)| *i != best_i)
+        .filter(|(i, s)| *i != best_i && s.0 != kind)
         .map(|(_, s)| s.1)
         .fold(f32::MIN, f32::max);
     Some(ScreenMatch {
@@ -453,6 +457,7 @@ const SCREEN_PNGS: &[(ScreenKind, &[u8])] = screen_refs![
     ScreenKind::LevelSelect => "../../assets/screens/level_select.png",
     ScreenKind::HighscoreEntry => "../../assets/screens/highscore_entry.png",
     ScreenKind::Ending => "../../assets/screens/ending.png",
+    ScreenKind::Ending => "../../assets/screens/ending.b_type.png",
     ScreenKind::Boot => "../../assets/screens/boot.png",
     ScreenKind::InGame => "../../assets/screens/in_game.png",
     ScreenKind::Pause => "../../assets/screens/pause.png",
@@ -472,7 +477,11 @@ mod tests {
 
     fn synthetic(seed: u32) -> Vec<f32> {
         (0..TILES)
-            .map(|i| (((i as u32).wrapping_mul(2654435761u32.wrapping_add(seed.wrapping_mul(40503))) >> 7) % 200) as f32)
+            .map(|i| {
+                (((i as u32).wrapping_mul(2654435761u32.wrapping_add(seed.wrapping_mul(40503)))
+                    >> 7)
+                    % 200) as f32
+            })
             .collect()
     }
 
@@ -542,7 +551,9 @@ mod tests {
     #[test]
     fn builtin_refs_load() {
         let refs = builtin_refs();
-        assert_eq!(refs.len(), ScreenKind::ALL.len());
+        for kind in ScreenKind::ALL {
+            assert!(refs.iter().any(|r| r.kind == kind), "{}", kind.name());
+        }
         for r in &refs {
             let kept = r.mask.iter().filter(|&&k| k).count();
             assert!(kept >= 40, "{}: only {kept} tiles compared", r.kind.name());
@@ -559,7 +570,10 @@ mod tests {
         }
         let (x, y, w, h) = content_box(&img).unwrap();
         assert!((x - 8.0).abs() <= 4.0 && (y - 20.0).abs() <= 4.0, "{x} {y}");
-        assert!((w - 180.0).abs() <= 8.0 && (h - 130.0).abs() <= 8.0, "{w} {h}");
+        assert!(
+            (w - 180.0).abs() <= 8.0 && (h - 130.0).abs() <= 8.0,
+            "{w} {h}"
+        );
         assert!(content_box(&Image::new(200, 160, 3)).is_none());
     }
 }
