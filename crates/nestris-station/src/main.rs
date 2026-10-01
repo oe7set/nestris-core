@@ -449,7 +449,7 @@ impl Station {
         }
 
         if self.last_live_at.elapsed() >= self.live_interval {
-            let mut live = self.session.live(out, &rfid);
+            let mut live = self.session.live(out, &rfid, self.cfg.mqtt.live_playfield);
             let ts = std::mem::take(&mut live.ts);
             let key = serde_json::to_string(&live).unwrap_or_default();
             if key != self.last_live_key {

@@ -24,6 +24,9 @@ use nestris_engine::output::{Fields, GameStats, OutputFrame};
 use nestris_engine::state::plausibility::infer_start_level;
 use tracing::{info, warn};
 
+/// Discarded false starts up to this length are not logged.
+const SHORT_FALSE_START_FRAMES: u64 = 10;
+
 use crate::config::SessionSection;
 use crate::payload::{self, Cheat, GameEnd, GameStart, Live, Validation};
 use crate::rfid::{Player, RfidSnapshot};
@@ -239,8 +242,9 @@ impl SessionTracker {
         self.end(EndReason::Shutdown)
     }
 
-    /// The live view of the current frame.
-    pub fn live(&self, out: &OutputFrame, rfid: &RfidSnapshot) -> Live {
+    /// The live view of the current frame (`with_playfield`: include the
+    /// stack while in play).
+    pub fn live(&self, out: &OutputFrame, rfid: &RfidSnapshot, with_playfield: bool) -> Live {
         let game = self.active.as_ref().filter(|a| a.announced);
         let s = &out.stats;
         Live {
@@ -261,6 +265,11 @@ impl SessionTracker {
             pieces: s.pieces,
             cheated: game.map_or(0, |a| a.detector.cheated()),
             confidence: round4(out.confidence.overall),
+            playfield: if with_playfield && out.game_state == GameState::InGame {
+                out.fields.playfield.as_deref().map(playfield_rows)
+            } else {
+                None
+            },
             ts: payload::now(),
         }
     }
@@ -290,7 +299,9 @@ impl SessionTracker {
             return Vec::new();
         };
         if !a.announced {
-            if a.ingame_frames > 0 {
+            // A few frames are routine: the engine confirms a new game a
+            // handful of frames after the first in-game frame.
+            if a.ingame_frames > SHORT_FALSE_START_FRAMES {
                 info!(
                     frames = a.ingame_frames,
                     "discarding a too-short game (false start)"
@@ -386,6 +397,13 @@ fn cheat_event(a: &Active, station: &str, event: IntegrityEvent) -> Option<Sessi
             None
         }
     }
+}
+
+/// Engine playfield (20 rows of 10 cell ids) as 20 digit strings.
+pub fn playfield_rows(grid: &[Vec<u8>]) -> Vec<String> {
+    grid.iter()
+        .map(|row| row.iter().map(|&c| char::from(b'0' + c.min(9))).collect())
+        .collect()
 }
 
 pub fn game_state_str(state: GameState) -> String {
@@ -577,6 +595,70 @@ mod tests {
         assert_eq!(end.end_reason, "signal_lost");
         assert!(!end.valid);
         assert!(end.player.is_none());
+    }
+
+    /// A long pause (the console blanks the screen) never ends the game.
+    #[test]
+    fn long_pause_keeps_the_game() {
+        let mut r = Run {
+            t: tracker(),
+            seq: 0,
+            events: Vec::new(),
+        };
+        let rfid = RfidSnapshot::default();
+        r.feed(GameState::InGame, 0, 0, 200, &rfid);
+        r.feed(GameState::Paused, 0, 0, 5 * 60 * 60, &rfid);
+        r.feed(GameState::InGame, 800, 2, 200, &rfid);
+        assert!(matches!(&r.events[..], [SessionEvent::Start(_)]));
+        assert!(r.t.game_id().is_some());
+        r.feed(GameState::GameOver, 800, 2, 40, &rfid);
+        let SessionEvent::End(end) = r.events.last().unwrap() else {
+            panic!("expected an end event")
+        };
+        assert_eq!(end.end_reason, "game_over");
+    }
+
+    /// Menus after the curtain close the game once, as `game_over`.
+    #[test]
+    fn menus_after_game_over_end_once() {
+        let mut r = Run {
+            t: tracker(),
+            seq: 0,
+            events: Vec::new(),
+        };
+        let rfid = RfidSnapshot::default();
+        r.feed(GameState::InGame, 100, 1, 200, &rfid);
+        r.feed(GameState::GameOver, 100, 1, 10, &rfid);
+        r.feed(GameState::LevelSelect, 100, 1, 100, &rfid);
+        r.feed(GameState::TypeSelect, 100, 1, 100, &rfid);
+        let ends: Vec<&GameEnd> = r
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::End(end) => Some(end.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ends.len(), 1);
+        assert_eq!(ends[0].end_reason, "game_over");
+    }
+
+    #[test]
+    fn live_carries_the_playfield_only_in_play() {
+        let t = tracker();
+        let rfid = RfidSnapshot::default();
+        let mut f = frame(0, GameState::InGame, 0, 0, false);
+        let mut grid = vec![vec![0u8; 10]; 20];
+        grid[19] = vec![1, 2, 3, 0, 0, 0, 0, 0, 0, 1];
+        f.fields.playfield = Some(grid);
+        let live = t.live(&f, &rfid, true);
+        let rows = live.playfield.expect("playfield in play");
+        assert_eq!(rows.len(), 20);
+        assert_eq!(rows[0], "0000000000");
+        assert_eq!(rows[19], "1230000001");
+        assert!(t.live(&f, &rfid, false).playfield.is_none());
+        f.game_state = GameState::Paused;
+        assert!(t.live(&f, &rfid, true).playfield.is_none());
     }
 
     /// Real recorded game (`NESTRIS_SAMPLE_NGF=<file.ngf[.gz]>`, skipped when

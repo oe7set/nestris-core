@@ -21,7 +21,7 @@ Voraussetzung: Docker Desktop läuft.
 
 ```powershell
 cd D:\Projekte\Retroverse\nestris-core
-./tools/build-station-deb.ps1            # → dist\nestris-station_0.1.0-1_amd64.deb
+./tools/build-station-deb.ps1            # → dist\nestris-station_0.2.0-1_amd64.deb
 ```
 
 Der Build läuft in einem Debian-12-Container und funktioniert daher auf
@@ -257,6 +257,15 @@ Für die Host-Software, die die Ergebnisse auswertet:
   heißt: Der Select-Trick wurde verwendet.
 - `status` ist retained, mit Last Will `offline`: Man sieht sofort, welche
   Station tot ist.
+- `live` enthält neben Score, Lines, Level, Next und Statistik auch das
+  **Spielfeld** (`playfield`): 20 Zeilen à 10 Ziffern von oben nach unten.
+  `0` ist leer, `1` weiß, `2`/`3` sind die beiden Farben des aktuellen
+  Levels, die Farbe selbst ergibt sich aus `level`. Das fallende Stück ist
+  enthalten. Außerhalb des Spiels ist das Feld `null`, auch während der
+  Pause: Die Konsole versteckt das Brett in der Pause, also tut es die
+  Zuschaueransicht auch. Gesendet wird bei jeder Änderung, höchstens
+  `mqtt.live_max_hz`-mal pro Sekunde (Standard 10, etwa 3 KB/s pro Station).
+  Mit `live_playfield = false` wird das Spielfeld abgeschaltet.
 - Stand heute gibt es noch **keinen** Host-Konsumenten (TournamentHigscore,
   NestrisLTM und die Webseite lesen noch kein MQTT). Das ist der nächste Schritt.
 
@@ -305,6 +314,26 @@ ls /var/lib/nestris-station/recordings    # ein .ngf.gz pro Spiel (Beweis bei St
 
 Mehr Log für eine Komponente: in `/etc/nestris-station/env`
 `RUST_LOG=info,nestris_station::rfid=debug` setzen, dann den Dienst neu starten.
+
+**Bildschirm-Erkennung:** Die Station erkennt Titel (auch mit dem
+Retroverse-Logo des Event-ROMs), Spielmodus-Auswahl, Level-Auswahl, Spiel,
+Pause, Game-Over-Vorhang, Raketen-Ende und Highscore-Eingabe am festen
+NES-Kachelraster. Eine Pause beendet nie ein Spiel, egal wie lang sie dauert.
+Einschalt- und Copyright-Bildschirm sowie Flashcart-Menüs gelten nicht als
+Menü. Getestet ist das mit echten Aufnahmen einer Station; die Ergebnisse
+stehen in `docs/VERIFICATION.md`. Mit einem anderen ROM-Hack oder einer
+anderen Karte sollte man vor dem Event einmal aufnehmen und am Windows-PC
+mit dem `nestris`-Werkzeug aus diesem Repository prüfen:
+
+```sh
+nestris screens eval --input aufnahme.mkv --timeline 25   # Zeitleiste + erkannte Spielstarts
+```
+
+**Aufnahmen:** Wer zum Testen mitschneidet, sollte auf die Bildrate
+achten. Die bisherigen `aufnahme_*.mkv` sind mit 25 fps gespeichert, obwohl
+die Karte 50 fps liefert; sie laufen dadurch halb so schnell. Reparieren
+ohne Neukodierung: `ffmpeg -r 50 -i aufnahme.mkv -c copy aufnahme_50fps.mkv`.
+Alternativ beim Auswerten `--fps 50` angeben.
 
 **PAL:** Eine PAL-Konsole ist kein Problem. Spielfeld und Ziffern liegen an
 derselben Stelle wie bei NTSC, und die Punkteberechnung (inkl.

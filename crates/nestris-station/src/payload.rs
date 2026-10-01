@@ -76,6 +76,11 @@ pub struct Live {
     pub pieces: i64,
     pub cheated: u32,
     pub confidence: f64,
+    /// The stack, top row first: 20 strings of 10 cell ids (`0` empty,
+    /// `1` white, `2`/`3` the level's two accent colors). `null` outside
+    /// active play (menus, pause: the console hides the board while paused)
+    /// or with `mqtt.live_playfield = false`.
+    pub playfield: Option<Vec<String>>,
     pub ts: String,
 }
 

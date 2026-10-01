@@ -129,6 +129,8 @@ pub struct MqttSection {
     pub keepalive_s: u64,
     /// Upper rate for the `live` topic (published on change only).
     pub live_max_hz: f64,
+    /// Include the stack (`playfield`) in `live` messages.
+    pub live_playfield: bool,
     pub status_interval_s: f64,
     pub reconnect_max_s: f64,
 }
@@ -146,7 +148,8 @@ impl Default for MqttSection {
             ca_file: String::new(),
             topic_prefix: "retroverse/nestris".into(),
             keepalive_s: 15,
-            live_max_hz: 5.0,
+            live_max_hz: 10.0,
+            live_playfield: true,
             status_interval_s: 10.0,
             reconnect_max_s: 30.0,
         }

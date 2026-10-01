@@ -133,7 +133,7 @@ password in `mqtt.password_file` (mode 0600) or as
 | `station` | `id` (topic + game-id prefix), `name`, `state_dir` (default: systemd `StateDirectory`, `/var/lib/nestris-station`) |
 | `capture` | `device` (device path or stream URL), `input_format`, `width`/`height`/`fps`, `scale_width`/`scale_height`, `stall_timeout_s` (5), `backoff_max_s` (30) |
 | `rfid` | `enabled`, `port`, `baud` (115200), `stale_after_s` (3), `player_grace_s` (60) |
-| `mqtt` | `host`, `port`, `username`, `password_file`, `tls`/`ca_file`, `topic_prefix` (`retroverse/nestris`), `live_max_hz` (5), `status_interval_s` (10) |
+| `mqtt` | `host`, `port`, `username`, `password_file`, `tls`/`ca_file`, `topic_prefix` (`retroverse/nestris`), `live_max_hz` (10), `live_playfield` (true), `status_interval_s` (10) |
 | `recording` | `enabled`, `dir`, `keep_days` (30), `max_gb` (20) |
 | `spool` | `dir`, `max_files` |
 | `session` | `end_confirm_frames` (30), `min_game_frames` (120), `signal_lost_end_s` (30) |
@@ -165,7 +165,7 @@ host must deduplicate by `game_id` (+ topic).
 ### `status`
 
 ```json
-{"state":"online","station":"station-1","name":"Station 1","version":"0.1.0",
+{"state":"online","station":"station-1","name":"Station 1","version":"0.2.0",
  "capture":"ok","capture_detail":"1280x720","lock":"locked","game_state":"in_game",
  "rfid":"ok","game_id":"station-1-1790241008228","fps":60.0,"dropped_frames":0,
  "uptime_s":3605,"ts":"2026-09-24T09:10:08.228Z"}
@@ -190,10 +190,22 @@ host must deduplicate by `game_id` (+ topic).
 {"game_id":"station-1-1790241008228","player":{"uid":"A1B2C3D4","name":"Erv"},
  "game_state":"in_game","score":22800,"lines":4,"level":18,"next_piece":"I",
  "tetris_rate":1.0,"burn":0,"drought":3,"max_drought":9,"pps":0.9876,"pieces":12,
- "cheated":0,"confidence":0.95,"ts":"..."}
+ "cheated":0,"confidence":0.95,
+ "playfield":["0000000000","0000000000","...","0000000110","2221103311"],
+ "ts":"..."}
 ```
 
 `game_id` is `null` between games (menus still update `game_state`).
+
+`playfield` is the stack, top row first: 20 strings of 10 cell ids — `0`
+empty, `1` white, `2`/`3` the two accent colors of the current level's
+palette (the color itself follows from `level`, as on the console). It
+includes the falling piece and is held through line-clear animations. It is
+`null` outside `in_game` — in particular while paused, because the console
+hides the board during a pause and a spectator view must not reveal it — and
+when `mqtt.live_playfield = false`. With the board, `live` changes with every
+piece move and is published at up to `live_max_hz` (default 10/s, about
+3 KB/s per station).
 
 ### `event/game_start`
 
