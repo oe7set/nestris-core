@@ -58,6 +58,10 @@ pub struct FusionConfig {
     pub min_report_confidence: f64,
     pub enforce_monotonic: bool,
     pub new_game_menu_frames: u32,
+    /// Consecutive in-game frames that confirm an armed new game (`0` fires
+    /// on the first one, as the Python oracle does). Screen transitions can
+    /// produce a stray in-game frame between two menus.
+    pub new_game_confirm_frames: u32,
 }
 
 impl Default for FusionConfig {
@@ -68,6 +72,7 @@ impl Default for FusionConfig {
             min_report_confidence: 0.4,
             enforce_monotonic: true,
             new_game_menu_frames: 10,
+            new_game_confirm_frames: 5,
         }
     }
 }
@@ -195,6 +200,40 @@ impl Default for TrackingConfig {
     }
 }
 
+/// Screen (menu / pause / ending) classification.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScreenConfig {
+    /// `"signature"`: NES-tile layout signatures of every screen (see
+    /// `state::screen_sig`); `"legacy"`: the Python port's pixel-fraction
+    /// heuristics, kept for oracle parity (`nestris verify`).
+    pub mode: String,
+    /// Minimum correlation for a signature match.
+    pub match_threshold: f64,
+    /// Minimum lead of the best signature over the runner-up.
+    pub match_margin: f64,
+    /// Consecutive menu matches needed to leave a running game (guards
+    /// against single garbled frames).
+    pub menu_confirm_frames: u32,
+}
+
+impl Default for ScreenConfig {
+    fn default() -> Self {
+        Self {
+            mode: "signature".into(),
+            match_threshold: 0.8,
+            match_margin: 0.05,
+            menu_confirm_frames: 4,
+        }
+    }
+}
+
+impl ScreenConfig {
+    pub fn legacy(&self) -> bool {
+        self.mode == "legacy"
+    }
+}
+
 /// Output-shaping options. Default off so the serialized `OutputFrame`
 /// stays byte-identical to the verified schema.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -215,6 +254,7 @@ pub struct EngineConfig {
     pub plausibility: PlausibilityConfig,
     pub recognition: RecognitionConfig,
     pub tracking: TrackingConfig,
+    pub screen: ScreenConfig,
     pub output: OutputConfig,
 }
 

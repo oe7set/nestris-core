@@ -394,6 +394,23 @@ impl VideoDecoder {
         })
     }
 
+    /// Open a file whose container frame rate is wrong (e.g. a 50 fps
+    /// capture muxed as 25 fps): frames are stamped `seq / fps` and `start`
+    /// is in real seconds.
+    pub fn open_file_with_fps(input: &str, start: f64, fps: f64) -> Result<VideoDecoder> {
+        if InputKind::of(input).is_live() {
+            bail!("--fps only applies to files");
+        }
+        if fps.is_nan() || fps <= 0.0 {
+            bail!("invalid fps {fps}");
+        }
+        let tagged = probe(input)?.fps.max(1.0);
+        let mut decoder = Self::open(input, start * fps / tagged)?;
+        decoder.info.fps = fps;
+        decoder.info.duration_s = decoder.info.duration_s.map(|d| d * tagged / fps);
+        Ok(decoder)
+    }
+
     pub fn info(&self) -> &VideoInfo {
         &self.info
     }

@@ -2367,6 +2367,8 @@ dependencies = [
  "nestris-engine",
  "nestris-host",
  "nestris-ngf",
+ "nestris-vision",
+ "png 0.17.16",
  "serde_json",
 ]
 

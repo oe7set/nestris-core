@@ -180,6 +180,8 @@ pub struct FusionEngine {
     prev_state: GameState,
     menu_streak: u32,
     new_game_armed: bool,
+    /// Consecutive in-game frames while armed.
+    armed_ingame: u32,
 }
 
 impl FusionEngine {
@@ -203,6 +205,7 @@ impl FusionEngine {
             prev_state: GameState::Unknown,
             menu_streak: 0,
             new_game_armed: false,
+            armed_ingame: 0,
             cfg,
         }
     }
@@ -223,6 +226,7 @@ impl FusionEngine {
         self.next_hold = 0;
         self.menu_streak = 0;
         self.new_game_armed = false;
+        self.armed_ingame = 0;
     }
 
     /// Fold `reading` into the fused state and return the new state.
@@ -347,6 +351,7 @@ impl FusionEngine {
 
     fn detect_new_game(&mut self, state: GameState, reading: &RawReading) -> bool {
         if is_menu_state(state) {
+            self.armed_ingame = 0;
             self.menu_streak += 1;
             if self.menu_streak >= self.cfg.new_game_menu_frames {
                 self.new_game_armed = true;
@@ -356,8 +361,13 @@ impl FusionEngine {
         }
         if state == GameState::InGame {
             if self.new_game_armed {
-                self.new_game_armed = false;
-                return true;
+                self.armed_ingame += 1;
+                if self.armed_ingame > self.cfg.new_game_confirm_frames {
+                    self.new_game_armed = false;
+                    self.armed_ingame = 0;
+                    return true;
+                }
+                return false;
             }
             if self.restart_pending(reading) {
                 return true;

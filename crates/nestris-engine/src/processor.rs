@@ -6,6 +6,7 @@ use nestris_vision::Image;
 use crate::config::EngineConfig;
 use crate::enums::GameState;
 use crate::frame::Frame;
+use crate::geometry_cal::calibration::Rectifier;
 use crate::geometry_cal::lock::{CalibrationLock, LockState};
 use crate::layout::{LayoutTable, get_layout};
 use crate::output::{
@@ -68,6 +69,10 @@ pub struct FrameProcessor {
     prev_occupancy: Option<Grid<bool>>,
     frame_events: Vec<Event>,
     last_canonical: Option<Image>,
+    /// The last usable geometry, kept after the lock drops so menus and the
+    /// blanked pause stay recognizable (signature screen mode; capture
+    /// geometry rarely changes between games).
+    remembered: Option<Rectifier>,
     // Presentation-only live state.
     live_playfield: Option<Vec<Vec<u8>>>,
     live_anim: bool,
@@ -96,7 +101,7 @@ impl FrameProcessor {
         };
         Self {
             layout: get_layout(),
-            classifier: ScreenClassifier::new(),
+            classifier: ScreenClassifier::with_config(config.screen.clone()),
             digits: DigitReader::new(base),
             score_latch,
             statistics: StatisticsReader::new(),
@@ -120,6 +125,7 @@ impl FrameProcessor {
             prev_occupancy: None,
             frame_events: Vec::new(),
             last_canonical: None,
+            remembered: None,
             live_playfield: None,
             live_anim: false,
             live_flash: false,
@@ -182,6 +188,7 @@ impl FrameProcessor {
 
     pub fn reset_lock(&mut self) {
         self.lock.reset();
+        self.remembered = None;
         self.last_lock_state = LockState::Unlocked;
     }
 
@@ -215,11 +222,22 @@ impl FrameProcessor {
         }
         self.last_canonical = canon.clone();
 
+        let aligned_gray = if self.config.screen.legacy() {
+            None
+        } else if canon.is_some() {
+            self.remember_geometry();
+            None
+        } else {
+            self.remembered
+                .as_ref()
+                .map(|r| to_luma(&r.rectify(&frame.image)))
+        };
         let classification = self.classifier.classify_frame(
             &frame.image,
             canon.as_ref(),
             self.last_state,
             canon_gray.as_ref(),
+            aligned_gray.as_ref(),
         );
 
         let reading = match (&canon, &canon_gray) {
@@ -273,6 +291,21 @@ impl FrameProcessor {
         self.last_state = Some(fused.state);
         let stats = self.stats.update(&fused);
         self.build_output(frame, fused, stats, plausible)
+    }
+
+    /// Keep a copy of the current lock geometry (rebuilt only when it moved).
+    fn remember_geometry(&mut self) {
+        let Some(current) = self.lock.rectifier() else {
+            return;
+        };
+        if self
+            .remembered
+            .as_ref()
+            .is_some_and(|r| r.matrix() == current.matrix())
+        {
+            return;
+        }
+        self.remembered = Rectifier::new(*current.matrix(), current.undistort().cloned());
     }
 
     fn track_spawn(&mut self, fused: &FusedState) {

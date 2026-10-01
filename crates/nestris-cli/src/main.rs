@@ -3,6 +3,7 @@
 //! oracle's stage dumps — the Phase-5 gate), and `list-devices`.
 
 mod config_load;
+mod screens;
 mod verify;
 
 use std::path::PathBuf;
@@ -75,6 +76,10 @@ enum Cmd {
         /// Also record games already in progress when capture starts.
         #[arg(long)]
         record_partial: bool,
+        /// Real frame rate of a file muxed with a wrong one (e.g. `50` for a
+        /// 50 fps capture stored as 25 fps); timestamps and --start use it.
+        #[arg(long)]
+        fps: Option<f64>,
     },
     /// Replay a recorded .ngf / .ngf.gz game as schema-v4 output frames.
     Replay {
@@ -109,6 +114,14 @@ enum Cmd {
         /// unlocked (the "does the preview stutter" number).
         #[arg(long, default_value_t = 0)]
         acquire: u64,
+        /// Real frame rate of a file muxed with a wrong one.
+        #[arg(long)]
+        fps: Option<f64>,
+    },
+    /// Screen-signature tools: build references, evaluate, dump frames.
+    Screens {
+        #[command(subcommand)]
+        cmd: screens::ScreensCmd,
     },
     /// Diff the full Rust pipeline against the Python oracle's stage dumps.
     Verify {
@@ -133,6 +146,8 @@ pub fn engine_config(oracle_parity: bool) -> EngineConfig {
     let mut cfg = EngineConfig::default();
     if oracle_parity {
         cfg.calibration.background_recalibration = false;
+        cfg.screen.mode = "legacy".into();
+        cfg.fusion.new_game_confirm_frames = 0;
     }
     cfg
 }
@@ -146,6 +161,8 @@ fn load_config(
     let mut cfg = config_load::load(path.map(|p| p.as_path()), preset, overrides)?;
     if oracle_parity {
         cfg.calibration.background_recalibration = false;
+        cfg.screen.mode = "legacy".into();
+        cfg.fusion.new_game_confirm_frames = 0;
     }
     Ok(cfg)
 }
@@ -167,6 +184,7 @@ fn main() -> Result<()> {
             record_dir,
             record_raw,
             record_partial,
+            fps,
         } => run(RunArgs {
             input,
             jsonl,
@@ -182,6 +200,7 @@ fn main() -> Result<()> {
             record_dir,
             record_raw,
             record_partial,
+            fps,
         }),
         Cmd::Replay {
             file,
@@ -196,13 +215,15 @@ fn main() -> Result<()> {
             frames,
             warmup,
             acquire,
+            fps,
         } => {
             if acquire > 0 {
                 bench_acquire(&input, start, frames, acquire)
             } else {
-                bench(&input, start, frames, warmup)
+                bench(&input, start, frames, warmup, fps)
             }
         }
+        Cmd::Screens { cmd } => screens::run(cmd),
         Cmd::Verify {
             fixtures,
             stages,
@@ -237,6 +258,7 @@ struct RunArgs {
     record_dir: Option<PathBuf>,
     record_raw: bool,
     record_partial: bool,
+    fps: Option<f64>,
 }
 
 fn run(args: RunArgs) -> Result<()> {
@@ -247,7 +269,7 @@ fn run(args: RunArgs) -> Result<()> {
         args.oracle_parity,
     )?;
     let background = cfg.calibration.background_recalibration;
-    let mut decoder = VideoDecoder::open(&args.input, args.start)?;
+    let mut decoder = screens::open(&args.input, args.start, args.fps)?;
     let mut processor = FrameProcessor::new(cfg);
 
     let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
@@ -355,8 +377,8 @@ fn replay(
     Ok(())
 }
 
-fn bench(input: &str, start: f64, frames: u64, warmup: u64) -> Result<()> {
-    let mut decoder = VideoDecoder::open(input, start)?;
+fn bench(input: &str, start: f64, frames: u64, warmup: u64, fps: Option<f64>) -> Result<()> {
+    let mut decoder = screens::open(input, start, fps)?;
     let mut processor = FrameProcessor::new(engine_config(false));
     let mut times_ms: Vec<f64> = Vec::new();
     let mut fills: Vec<usize> = Vec::new();

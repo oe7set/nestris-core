@@ -28,6 +28,11 @@ impl MatchResult {
     }
 }
 
+/// Decode an embedded grayscale PNG (an RGB file collapses to channel 0).
+pub(crate) fn decode_png_gray(bytes: &[u8]) -> Image {
+    decode_png(bytes)
+}
+
 fn decode_png(bytes: &[u8]) -> Image {
     let decoder = png::Decoder::new(bytes);
     let mut reader = decoder.read_info().expect("embedded template png");
