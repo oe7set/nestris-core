@@ -264,10 +264,11 @@ Für die Host-Software, die die Ergebnisse auswertet:
   enthalten. Außerhalb des Spiels ist das Feld `null`, auch während der
   Pause: Die Konsole versteckt das Brett in der Pause, also tut es die
   Zuschaueransicht auch. Gesendet wird bei jeder Änderung, höchstens
-  `mqtt.live_max_hz`-mal pro Sekunde (Standard 10, etwa 3 KB/s pro Station).
+  `mqtt.live_max_hz`-mal pro Sekunde (Standard 60, also jeder NES-Frame, etwa
+  18 KB/s pro Station).
   Mit `live_playfield = false` wird das Spielfeld abgeschaltet.
-- Stand heute gibt es noch **keinen** Host-Konsumenten (TournamentHigscore,
-  NestrisLTM und die Webseite lesen noch kein MQTT). Das ist der nächste Schritt.
+- Der Host-Konsument ist die neue Host-App `nestris-ltm` (NestrisLTM). Sie
+  speichert Ergebnisse und Live-Frames in PostgreSQL.
 
 ## 10. Was man noch bedenken sollte
 

@@ -133,7 +133,7 @@ password in `mqtt.password_file` (mode 0600) or as
 | `station` | `id` (topic + game-id prefix), `name`, `state_dir` (default: systemd `StateDirectory`, `/var/lib/nestris-station`) |
 | `capture` | `device` (device path or stream URL), `input_format`, `width`/`height`/`fps`, `scale_width`/`scale_height`, `stall_timeout_s` (5), `backoff_max_s` (30) |
 | `rfid` | `enabled`, `port`, `baud` (115200), `stale_after_s` (3), `player_grace_s` (60) |
-| `mqtt` | `host`, `port`, `username`, `password_file`, `tls`/`ca_file`, `topic_prefix` (`retroverse/nestris`), `live_max_hz` (10), `live_playfield` (true), `status_interval_s` (10) |
+| `mqtt` | `host`, `port`, `username`, `password_file`, `tls`/`ca_file`, `topic_prefix` (`retroverse/nestris`), `live_max_hz` (60), `live_playfield` (true), `status_interval_s` (10) |
 | `recording` | `enabled`, `dir`, `keep_days` (30), `max_gb` (20) |
 | `spool` | `dir`, `max_files` |
 | `session` | `end_confirm_frames` (30), `min_game_frames` (120), `signal_lost_end_s` (30) |
@@ -204,8 +204,8 @@ includes the falling piece and is held through line-clear animations. It is
 `null` outside `in_game` — in particular while paused, because the console
 hides the board during a pause and a spectator view must not reveal it — and
 when `mqtt.live_playfield = false`. With the board, `live` changes with every
-piece move and is published at up to `live_max_hz` (default 10/s, about
-3 KB/s per station).
+piece move and is published at up to `live_max_hz` (default 60/s, i.e. every
+NES frame, about 18 KB/s per station).
 
 ### `event/game_start`
 

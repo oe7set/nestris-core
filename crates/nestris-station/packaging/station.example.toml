@@ -69,8 +69,9 @@ ca_file = ""
 topic_prefix = "retroverse/nestris"
 keepalive_s = 15
 # `live` carries score/lines/level/next/stats and the stack (`playfield`,
-# 20 rows of 10 cell ids, null outside active play). Published on change only.
-live_max_hz = 10.0
+# 20 rows of 10 cell ids, null outside active play). Published on change only;
+# 60 = every NES frame (smooth overlays), about 18 KB/s per station.
+live_max_hz = 60.0
 live_playfield = true
 status_interval_s = 10.0
 reconnect_max_s = 30.0

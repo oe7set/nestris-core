@@ -448,7 +448,11 @@ impl Station {
             }
         }
 
-        if self.last_live_at.elapsed() >= self.live_interval {
+        // Capture frames jitter around 16.7 ms; without a little slack a
+        // 60 Hz limit would drop every frame that arrives slightly early and
+        // halve the effective rate.
+        let slack = self.live_interval.mul_f64(0.25).min(Duration::from_millis(4));
+        if self.last_live_at.elapsed() + slack >= self.live_interval {
             let mut live = self.session.live(out, &rfid, self.cfg.mqtt.live_playfield);
             let ts = std::mem::take(&mut live.ts);
             let key = serde_json::to_string(&live).unwrap_or_default();

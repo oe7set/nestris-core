@@ -148,7 +148,7 @@ impl Default for MqttSection {
             ca_file: String::new(),
             topic_prefix: "retroverse/nestris".into(),
             keepalive_s: 15,
-            live_max_hz: 10.0,
+            live_max_hz: 60.0,
             live_playfield: true,
             status_interval_s: 10.0,
             reconnect_max_s: 30.0,
