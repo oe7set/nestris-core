@@ -44,11 +44,12 @@ backoff_max_s = 30.0
 
 [rfid]
 enabled = true
-# The ESP32 card reader (find it under /dev/serial/by-id/).
+# The Retroverse card reader (firmware nestris-rfid-reader, protocol v2;
+# find it under /dev/serial/by-id/).
 port = "/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"
 baud = 115200
-# The reader reports every 750 ms; silence longer than this reconnects.
-stale_after_s = 3.0
+# The reader sends a heartbeat every 2 s; silence longer than this reconnects.
+stale_after_s = 6.0
 # A card taken off the reader up to this long before a game starts still
 # counts as that game's player.
 player_grace_s = 60.0
