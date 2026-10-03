@@ -32,8 +32,11 @@ pub struct Status {
     /// Geometry lock: `unlocked`, `acquiring`, `locked`, `drift`, `lost`.
     pub lock: String,
     pub game_state: String,
-    /// `ok`, `offline`, `disabled`.
+    /// `ok`, `offline`, `outdated` (reader firmware with another protocol), `disabled`.
     pub rfid: &'static str,
+    /// Firmware version and serial number of the connected reader.
+    pub reader_fw: Option<String>,
+    pub reader_serial: Option<String>,
     pub game_id: Option<String>,
     pub fps: f64,
     pub dropped_frames: u64,

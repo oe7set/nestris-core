@@ -46,9 +46,10 @@ use crate::upload::{UploadJob, UploadQueue, Uploader, UploaderConfig};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 const STATUS_MIN_GAP: Duration = Duration::from_millis(500);
-/// Commands from `<base>/cmd` that are forwarded to the RFID reader. The
-/// reader's `config` command (Wi-Fi credentials) is deliberately excluded.
-const READER_COMMANDS: [&str; 2] = ["highscore", "setname"];
+/// Commands from `<base>/cmd` that are forwarded to the RFID reader
+/// (protocol v2, `nestris-rfid-reader/docs/PROTOCOL.md`): text on its display,
+/// writing a card, its display settings. `reboot`/`hello` stay with the station.
+const READER_COMMANDS: [&str; 3] = ["show", "write", "config"];
 
 #[derive(Parser)]
 #[command(
@@ -608,6 +609,8 @@ impl Station {
         let rfid_state = match &self.rfid {
             None => "disabled",
             Some(_) if rfid.connected => "ok",
+            // A device answers but with an old protocol: needs a firmware update.
+            Some(_) if rfid.protocol_error.is_some() => "outdated",
             Some(_) => "offline",
         };
         let player_key = (rfid.present.is_some(), rfid.present.clone(), rfid.connected);
@@ -634,6 +637,8 @@ impl Station {
             lock: self.lock.clone(),
             game_state: game_state_str(self.game_state),
             rfid: rfid_state,
+            reader_fw: rfid.info.as_ref().map(|i| i.fw.clone()),
+            reader_serial: rfid.info.as_ref().map(|i| i.serial.clone()),
             game_id: self.session.game_id().map(str::to_owned),
             fps: 0.0,
             dropped_frames: 0,

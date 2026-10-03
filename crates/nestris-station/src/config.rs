@@ -92,7 +92,8 @@ pub struct RfidSection {
     /// Serial port, e.g. `/dev/serial/by-id/usb-Silicon_Labs_CP2102...`.
     pub port: String,
     pub baud: u32,
-    /// No message from the reader for this long = offline (it reports every 750 ms).
+    /// No message from the reader for this long = reconnect (protocol v2 sends a
+    /// status heartbeat every 2 s).
     pub stale_after_s: f64,
     /// A card removed within this many seconds before a game starts still
     /// counts as that game's player.
@@ -105,7 +106,7 @@ impl Default for RfidSection {
             enabled: true,
             port: String::new(),
             baud: 115_200,
-            stale_after_s: 3.0,
+            stale_after_s: 6.0,
             player_grace_s: 60.0,
         }
     }

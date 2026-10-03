@@ -2,7 +2,8 @@
 
 `nestris-station` is the headless daemon for a Retroverse tournament
 station: a small Debian PC with a USB capture stick on the NES and the
-ESP32 RFID card reader on USB. It
+Retroverse card reader (ESP32, firmware `nestris-rfid-reader`, protocol v2)
+on USB. It
 
 - captures the console picture and runs the recognition engine,
 - attributes every game to the player whose card is on the reader,
@@ -132,7 +133,7 @@ password in `mqtt.password_file` (mode 0600) or as
 |---|---|
 | `station` | `id` (topic + game-id prefix), `name`, `state_dir` (default: systemd `StateDirectory`, `/var/lib/nestris-station`) |
 | `capture` | `device` (device path or stream URL), `input_format`, `width`/`height`/`fps`, `scale_width`/`scale_height`, `stall_timeout_s` (5), `backoff_max_s` (30) |
-| `rfid` | `enabled`, `port`, `baud` (115200), `stale_after_s` (3), `player_grace_s` (60) |
+| `rfid` | `enabled`, `port`, `baud` (115200), `stale_after_s` (6: no line for this long = reopen the port), `player_grace_s` (60) |
 | `mqtt` | `host`, `port`, `username`, `password_file`, `tls`/`ca_file`, `topic_prefix` (`retroverse/nestris`), `live_max_hz` (60), `live_playfield` (true), `status_interval_s` (10) |
 | `recording` | `enabled`, `dir`, `keep_days` (30), `max_gb` (20) |
 | `host` | `url` (NestrisLTM, empty = no upload), `token` / `token_file` (API token, scope `stations`), `retry_max_s` (300), `max_age_h` (48), `timeout_s` (30) |
@@ -168,13 +169,16 @@ host must deduplicate by `game_id` (+ topic).
 ```json
 {"state":"online","station":"station-1","name":"Station 1","version":"0.2.0",
  "capture":"ok","capture_detail":"1280x720","lock":"locked","game_state":"in_game",
- "rfid":"ok","game_id":"station-1-1790241008228","fps":60.0,"dropped_frames":0,
+ "rfid":"ok","reader_fw":"1.0.0","reader_serial":"A4CF12B3C4D5",
+ "game_id":"station-1-1790241008228","fps":60.0,"dropped_frames":0,
  "uptime_s":3605,"ts":"2026-09-24T09:10:08.228Z"}
 ```
 
 `capture`: `ok`, `opening`, `waiting_for_device` (unplugged), `reconnecting`
 (`capture_detail` has ffmpeg's error and the retry delay). `rfid`: `ok`,
-`offline`, `disabled`. On a clean shutdown and as the broker's last will:
+`offline`, `outdated` (a reader answers but with another protocol: flash the
+current `nestris-rfid-reader` firmware), `disabled`. `reader_fw` /
+`reader_serial` identify the connected reader (`null` without one). On a clean shutdown and as the broker's last will:
 `{"state":"offline","station":"station-1","ts":...}`.
 
 ### `player`
@@ -253,15 +257,21 @@ NES frame, about 18 KB/s per station).
 
 ### `cmd`
 
-Commands for the RFID reader's display, forwarded verbatim as one line:
+Commands for the card reader (protocol v2, see
+`nestris-rfid-reader/docs/PROTOCOL.md`), forwarded as one line once the
+reader has introduced itself:
 
 ```sh
-mosquitto_pub -t retroverse/nestris/station-1/cmd -m '{"type":"highscore","value":"159867"}'
-mosquitto_pub -t retroverse/nestris/station-1/cmd -m '{"type":"setname","value":"Erv"}'  # next card
+# text on the reader's display while this card lies on it
+mosquitto_pub -t retroverse/nestris/station-1/cmd -m '{"type":"show","uid":"04A1B2C3","lines":["Erv","Bestwert 159.867"]}'
+# write a name onto the card on the reader (optionally only card "uid")
+mosquitto_pub -t retroverse/nestris/station-1/cmd -m '{"type":"write","id":1,"name":"Erv","timeout_ms":15000}'
+# reader display settings (stored in the reader)
+mosquitto_pub -t retroverse/nestris/station-1/cmd -m '{"type":"config","display":"128x64"}'
 ```
 
-Only `highscore` and `setname` are accepted (the reader's Wi-Fi `config`
-command is deliberately not reachable over MQTT).
+Only `show`, `write` and `config` are accepted. The reader's answers
+(`result`) appear in the station log; failed commands as warnings.
 
 ## Recording upload (NestrisLTM)
 

@@ -475,6 +475,7 @@ mod tests {
                 name: Some("Erv".into()),
             }),
             last_seen: None,
+            ..Default::default()
         }
     }
 

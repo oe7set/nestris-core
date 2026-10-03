@@ -170,6 +170,7 @@ jedem Boot von selbst. Es ist nichts weiter zu tun.
 | ffmpeg bricht ab / Karte liefert keine Bilder | Neustart der Capture nach 5 s, Backoff bis 30 s |
 | Capture-Karte abgesteckt | Status `waiting_for_device`, läuft weiter, sobald sie wieder steckt |
 | RFID-Leser abgesteckt | Reconnect-Schleife, Status `rfid: offline` |
+| Leser mit alter Firmware | Status `rfid: outdated`: Firmware `nestris-rfid-reader` flashen (siehe dort `docs/FLASHING.md`) |
 | Netzwerk / Broker weg | Reconnect-Schleife; Spielergebnisse warten im Spool auf der Platte und werden nachgesendet |
 | Stromausfall / Neustart | Dienst startet beim Boot, der Spool wird nachgesendet |
 
