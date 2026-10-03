@@ -14,6 +14,7 @@ mod payload;
 mod rfid;
 mod session;
 mod spool;
+mod upload;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -40,6 +41,7 @@ use crate::payload::{PlayerPayload, Status};
 use crate::rfid::{RfidReader, RfidSnapshot};
 use crate::session::{SessionEvent, SessionTracker, game_state_str};
 use crate::spool::Spool;
+use crate::upload::{UploadJob, UploadQueue, Uploader, UploaderConfig};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
@@ -255,6 +257,12 @@ struct Station {
     rfid: Option<RfidReader>,
     session: SessionTracker,
     recording: Option<(GameRecorder, RecordingSink)>,
+    /// Upload queue for finished recordings (None when host.url is empty).
+    uploads: Option<Arc<UploadQueue>>,
+    uploader: Option<Uploader>,
+    /// Game id of the session game that belongs to the running recording.
+    recording_game: Option<String>,
+    last_game: Option<String>,
     started: Instant,
     capture: &'static str,
     capture_detail: Option<String>,
@@ -283,9 +291,36 @@ impl Station {
             let dir = cfg.recording_dir();
             let sink = RecordingSink::new(dir.clone(), cfg.recording.gzip)?;
             info!(dir = %dir.display(), "recording games");
-            Some((GameRecorder::new(RecorderConfig::default()), sink))
+            // record_partial: a game the station joined mid-way (restart,
+            // replay) is still recorded; the session flags it as partial_game.
+            let recorder = GameRecorder::new(RecorderConfig {
+                record_partial: true,
+                ..RecorderConfig::default()
+            });
+            Some((recorder, sink))
         } else {
             None
+        };
+        let (uploads, uploader) = if cfg.recording.enabled && !cfg.host.url.is_empty() {
+            let token = cfg
+                .host_token()?
+                .context("host.url is set but host.token / host.token_file is empty")?;
+            let queue = Arc::new(UploadQueue::open(cfg.uploads_dir())?);
+            let uploader = Uploader::start(
+                queue.clone(),
+                UploaderConfig {
+                    base_url: cfg.host.url.clone(),
+                    station: cfg.station.id.clone(),
+                    token,
+                    retry_max: Duration::from_secs_f64(cfg.host.retry_max_s.max(5.0)),
+                    max_age: Duration::from_secs_f64(cfg.host.max_age_h.max(1.0) * 3600.0),
+                    timeout: Duration::from_secs_f64(cfg.host.timeout_s.max(5.0)),
+                },
+            );
+            info!(host = %cfg.host.url, "uploading recordings to the host");
+            (Some(queue), Some(uploader))
+        } else {
+            (None, None)
         };
         let session = SessionTracker::new(
             cfg.session.clone(),
@@ -300,6 +335,10 @@ impl Station {
             rfid,
             session,
             recording,
+            uploads,
+            uploader,
+            recording_game: None,
+            last_game: None,
             started: Instant::now(),
             capture: "opening",
             capture_detail: None,
@@ -434,18 +473,20 @@ impl Station {
         self.game_state = out.game_state;
         let rfid = self.rfid_snapshot();
         let events = self.session.push(out, &rfid);
+        self.note_games(&events);
         self.publish_events(events);
 
+        let mut saved = Vec::new();
         if let Some((recorder, sink)) = &mut self.recording {
             let events = recorder.push(out);
             match sink.handle(recorder, events) {
-                Ok(saved) => {
-                    for path in saved {
-                        info!(path = %path.display(), "recording saved");
-                    }
-                }
+                Ok(paths) => saved = paths,
                 Err(e) => warn!(error = %format!("{e:#}"), "recording failed"),
             }
+        }
+        for path in saved {
+            info!(path = %path.display(), "recording saved");
+            self.queue_upload(path);
         }
 
         // Capture frames jitter around 16.7 ms; without a little slack a
@@ -467,6 +508,44 @@ impl Station {
                 self.last_live_key = key;
                 self.last_live_at = Instant::now();
             }
+        }
+    }
+
+    /// Remember which session game the running recording belongs to.
+    fn note_games(&mut self, events: &[SessionEvent]) {
+        for event in events {
+            if let SessionEvent::Start(start) = event {
+                self.last_game = Some(start.game_id.clone());
+                let recording = self.recording.as_ref().is_some_and(|(r, _)| r.recording());
+                if recording {
+                    self.recording_game = Some(start.game_id.clone());
+                }
+            }
+        }
+    }
+
+    fn queue_upload(&mut self, path: PathBuf) {
+        let Some(queue) = &self.uploads else {
+            self.recording_game = None;
+            return;
+        };
+        // Normally the session game started while this recording ran; a
+        // recording that began mid-game falls back to the last known game.
+        let Some(game_id) = self
+            .recording_game
+            .take()
+            .or_else(|| self.last_game.clone())
+        else {
+            warn!(path = %path.display(), "recording without a session game, not uploaded");
+            return;
+        };
+        match queue.push(&UploadJob { game_id, path }) {
+            Ok(()) => {
+                if let Some(uploader) = &self.uploader {
+                    uploader.notify();
+                }
+            }
+            Err(e) => error!(error = %format!("{e:#}"), "could not queue recording upload"),
         }
     }
 
@@ -624,13 +703,25 @@ impl Station {
     fn shutdown(&mut self) {
         info!("shutting down");
         let events = self.session.shutdown();
+        self.note_games(&events);
         self.publish_events(events);
+        let mut saved = None;
         if let Some((recorder, sink)) = &mut self.recording {
             match sink.finalize(recorder) {
-                Ok(Some(path)) => info!(path = %path.display(), "recording saved"),
+                Ok(Some(path)) => {
+                    info!(path = %path.display(), "recording saved");
+                    saved = Some(path);
+                }
                 Ok(None) => {}
                 Err(e) => warn!(error = %format!("{e:#}"), "recording finalize failed"),
             }
+        }
+        if let Some(path) = saved {
+            self.queue_upload(path);
+        }
+        if let Some(uploader) = &self.uploader {
+            // Pending jobs survive a restart; this only avoids a needless delay.
+            uploader.drain(Duration::from_secs(10));
         }
         if let Some(mqtt) = self.mqtt.take() {
             mqtt.shutdown(&self.cfg.station.id);

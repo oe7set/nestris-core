@@ -270,7 +270,26 @@ Für die Host-Software, die die Ergebnisse auswertet:
 - Der Host-Konsument ist die neue Host-App `nestris-ltm` (NestrisLTM). Sie
   speichert Ergebnisse und Live-Frames in PostgreSQL.
 
-## 10. Was man noch bedenken sollte
+## 10. Aufnahmen an NestrisLTM hochladen
+
+Damit der Host jedes Spiel vollständig hat (Replay, Streitfälle), lädt die
+Station jede gespeicherte Aufnahme nach Spielende hoch:
+
+1. In NestrisLTM unter *Einstellungen → API-Tokens* einen Token mit dem Recht
+   `stations` erzeugen (er wird nur einmal angezeigt).
+2. Auf der Station den Token ablegen:
+   `echo -n 'nltm_...' | sudo tee /etc/nestris-station/host-token && sudo chmod 640 /etc/nestris-station/host-token && sudo chown root:nestris /etc/nestris-station/host-token`
+3. In `station.toml`:
+   ```toml
+   [host]
+   url = "http://<host-ip>:7990"
+   token_file = "/etc/nestris-station/host-token"
+   ```
+4. `sudo systemctl restart nestris-station`. Im Log steht nach jedem Spiel
+   `recording uploaded`. Ist der Host nicht erreichbar, warten die Aufträge in
+   `/var/lib/nestris-station/uploads` und gehen später raus.
+
+## 11. Was man noch bedenken sollte
 
 **Vor dem Event**
 

@@ -29,6 +29,9 @@ rumqttc = { version = "0.25", default-features = false }
 # No libudev: port enumeration is not needed (the port is configured by path).
 serialport = { version = "4", default-features = false }
 tracing = "0.1"
+# Recording upload to the NestrisLTM host (plain HTTP on the LAN, no TLS).
+ureq = { version = "3", default-features = false }
+sha2 = "0.10"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(unix)'.dependencies]

@@ -84,6 +84,17 @@ gzip = true
 keep_days = 30
 max_gb = 20.0
 
+[host]
+# Upload every finished recording to NestrisLTM (empty url = off).
+# The token is a NestrisLTM API token with the "stations" scope
+# (NestrisLTM admin -> Einstellungen -> API-Tokens). Prefer token_file
+# (mode 0600) or NESTRIS_STATION__HOST__TOKEN in /etc/nestris-station/env.
+url = ""
+token_file = ""
+retry_max_s = 300.0
+max_age_h = 48.0
+timeout_s = 30.0
+
 [spool]
 # Undelivered game results survive network outages and restarts here.
 dir = ""

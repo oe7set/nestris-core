@@ -135,6 +135,7 @@ password in `mqtt.password_file` (mode 0600) or as
 | `rfid` | `enabled`, `port`, `baud` (115200), `stale_after_s` (3), `player_grace_s` (60) |
 | `mqtt` | `host`, `port`, `username`, `password_file`, `tls`/`ca_file`, `topic_prefix` (`retroverse/nestris`), `live_max_hz` (60), `live_playfield` (true), `status_interval_s` (10) |
 | `recording` | `enabled`, `dir`, `keep_days` (30), `max_gb` (20) |
+| `host` | `url` (NestrisLTM, empty = no upload), `token` / `token_file` (API token, scope `stations`), `retry_max_s` (300), `max_age_h` (48), `timeout_s` (30) |
 | `spool` | `dir`, `max_files` |
 | `session` | `end_confirm_frames` (30), `min_game_frames` (120), `signal_lost_end_s` (30) |
 | `integrity` | cheat detection and validation thresholds (see below) |
@@ -262,6 +263,31 @@ mosquitto_pub -t retroverse/nestris/station-1/cmd -m '{"type":"setname","value":
 Only `highscore` and `setname` are accepted (the reader's Wi-Fi `config`
 command is deliberately not reachable over MQTT).
 
+## Recording upload (NestrisLTM)
+
+With `host.url` set, every saved recording is uploaded to the host after the
+game ended, so the host has the complete game (every NES frame) for replays
+and disputes:
+
+```
+PUT <host.url>/api/stations/<station.id>/games/<game_id>/ngf
+Authorization: Bearer <host token>
+Content-Type: application/gzip
+X-NGF-SHA256: <hex>
+```
+
+- The recording is linked to the session game that started while it ran
+  (`game_id` as in `event/game_end`). Recording starts on the first in-game
+  frame too (`record_partial`), so games the station joined mid-way are kept.
+- Jobs live in `<state_dir>/uploads` (one small JSON per recording) and
+  survive restarts. `404` from the host means its `game_end` is not processed
+  yet and is retried; network errors and `5xx` back off up to
+  `retry_max_s`; `400`/`409`/`413` drop the job (logged as error); jobs
+  older than `max_age_h` are dropped. A clean shutdown waits up to 10 s for
+  pending uploads.
+- The host stores the file, verifies it decodes, and deletes its live frames
+  of that game (the recording replaces them).
+
 ## Cheat detection
 
 Legal score gains in NES Tetris come from line clears — base
@@ -335,6 +361,7 @@ journalctl -u nestris-station --since today | grep -E 'WARN|ERROR'
 mosquitto_sub -v -t 'retroverse/nestris/#'       # everything the stations publish
 ls /var/lib/nestris-station/recordings           # .ngf.gz per game
 ls /var/lib/nestris-station/spool                # undelivered results (normally empty)
+ls /var/lib/nestris-station/uploads              # recordings waiting for upload (normally empty)
 ```
 
 Debug a single component with `RUST_LOG`, e.g.

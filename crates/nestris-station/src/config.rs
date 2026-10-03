@@ -180,6 +180,36 @@ impl Default for RecordingSection {
     }
 }
 
+/// Upload of finished recordings to the NestrisLTM host.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostSection {
+    /// Base URL, e.g. `http://192.168.1.10:7990`. Empty = no uploads.
+    pub url: String,
+    /// NestrisLTM API token with the `stations` scope. Prefer `token_file`
+    /// or the environment; never logged.
+    pub token: String,
+    pub token_file: String,
+    /// Longest pause between retries.
+    pub retry_max_s: f64,
+    /// Give up on a recording after this many hours.
+    pub max_age_h: f64,
+    pub timeout_s: f64,
+}
+
+impl Default for HostSection {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            token: String::new(),
+            token_file: String::new(),
+            retry_max_s: 300.0,
+            max_age_h: 48.0,
+            timeout_s: 30.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SpoolSection {
@@ -242,6 +272,7 @@ pub struct StationConfig {
     pub rfid: RfidSection,
     pub mqtt: MqttSection,
     pub recording: RecordingSection,
+    pub host: HostSection,
     pub spool: SpoolSection,
     pub session: SessionSection,
     pub integrity: IntegrityConfig,
@@ -257,6 +288,7 @@ impl Default for StationConfig {
             rfid: RfidSection::default(),
             mqtt: MqttSection::default(),
             recording: RecordingSection::default(),
+            host: HostSection::default(),
             spool: SpoolSection::default(),
             session: SessionSection::default(),
             integrity: IntegrityConfig::default(),
@@ -322,6 +354,10 @@ impl StationConfig {
         }
         if self.capture.stall_timeout_s <= 0.0 || self.mqtt.live_max_hz <= 0.0 {
             bail!("capture.stall_timeout_s and mqtt.live_max_hz must be positive");
+        }
+        let url = &self.host.url;
+        if !(url.is_empty() || url.starts_with("http://") || url.starts_with("https://")) {
+            bail!("host.url must start with http:// (e.g. http://192.168.1.10:7990), got {url:?}");
         }
         Ok(())
     }
@@ -411,11 +447,28 @@ impl StationConfig {
         Ok((!self.mqtt.password.is_empty()).then(|| self.mqtt.password.clone()))
     }
 
+    /// The host upload token: `token_file` wins over `token`.
+    pub fn host_token(&self) -> Result<Option<String>> {
+        if !self.host.token_file.is_empty() {
+            let raw = std::fs::read_to_string(&self.host.token_file)
+                .with_context(|| format!("read {}", self.host.token_file))?;
+            return Ok(Some(raw.trim().to_string()));
+        }
+        Ok((!self.host.token.is_empty()).then(|| self.host.token.clone()))
+    }
+
+    pub fn uploads_dir(&self) -> PathBuf {
+        self.state_dir().join("uploads")
+    }
+
     /// Resolved config for display, secrets masked.
     pub fn masked(&self) -> StationConfig {
         let mut cfg = self.clone();
         if !cfg.mqtt.password.is_empty() {
             cfg.mqtt.password = "********".into();
+        }
+        if !cfg.host.token.is_empty() {
+            cfg.host.token = "********".into();
         }
         cfg
     }
