@@ -65,5 +65,7 @@ assets = [
     ["packaging/env.example", "etc/nestris-station/env", "640"],
     ["packaging/station.example.toml", "usr/share/doc/nestris-station/station.example.toml", "644"],
     ["packaging/99-nestris-station.rules", "usr/share/doc/nestris-station/99-nestris-station.rules", "644"],
+    ["../../LICENSE", "usr/share/doc/nestris-station/LICENSE", "644"],
+    ["../../NOTICE", "usr/share/doc/nestris-station/NOTICE", "644"],
 ]
 systemd-units = { unit-scripts = "packaging/", enable = true, start = false }

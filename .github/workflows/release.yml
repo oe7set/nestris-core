@@ -136,8 +136,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item README.md, LICENSE stage/cli/; Copy-Item README.md, LICENSE stage/gui/
-          Copy-Item README.md, LICENSE stage/qt-gui/
+          Copy-Item README.md, LICENSE, NOTICE stage/cli/; Copy-Item README.md, LICENSE, NOTICE stage/gui/
+          Copy-Item README.md, LICENSE, NOTICE stage/qt-gui/
           Copy-Item .github/release/QT-NOTICE.md stage/qt-gui/
           7z a "out/nestris-cli-$env:VERSION-windows-x64.zip" ./stage/cli/*
           7z a "out/nestris-gui-$env:VERSION-windows-x64.zip" ./stage/gui/*
@@ -148,14 +148,14 @@ jobs:
           # (tool_path checks ../ffmpeg/ relative to each exe).
           Move-Item bundle/nestris/cli/ffmpeg bundle/nestris/ffmpeg
           Remove-Item -Recurse bundle/nestris/gui/ffmpeg, bundle/nestris/qt-gui/ffmpeg
-          Copy-Item README.md, LICENSE bundle/nestris/
+          Copy-Item README.md, LICENSE, NOTICE bundle/nestris/
           Copy-Item -Recurse docs bundle/nestris/docs
           7z a "out/nestris-$env:VERSION-windows-x64-bundle.zip" ./bundle/nestris
       - name: Package zips (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p out bundle/nestris
-          for d in cli gui qt-gui; do cp README.md LICENSE stage/$d/; done
+          for d in cli gui qt-gui; do cp README.md LICENSE NOTICE stage/$d/; done
           cp .github/release/QT-NOTICE.md stage/qt-gui/
           if [ "$RUNNER_OS" = "macOS" ]; then
             (cd stage/cli && zip -qr "../../out/nestris-cli-$VERSION-${{ matrix.suffix }}.zip" .)
@@ -168,7 +168,7 @@ jobs:
             (cd stage/qt-gui && zip -qr "../../out/nestris-qt-gui-$VERSION-${{ matrix.suffix }}.zip" .)
           fi
           cp -R stage/cli stage/gui stage/qt-gui bundle/nestris/
-          cp README.md LICENSE bundle/nestris/
+          cp README.md LICENSE NOTICE bundle/nestris/
           cp -R docs bundle/nestris/docs
           if [ "$RUNNER_OS" = "macOS" ]; then
             ditto -c -k --keepParent bundle/nestris "out/nestris-$VERSION-${{ matrix.suffix }}-bundle.zip"
@@ -206,7 +206,7 @@ jobs:
       - name: Package web zip
         run: |
           mkdir -p out
-          cp README.md LICENSE web/dist/
+          cp README.md LICENSE NOTICE web/dist/
           (cd web/dist && zip -qr "../../out/nestris-web-$VERSION.zip" .)
       - uses: actions/upload-artifact@v4
         with:

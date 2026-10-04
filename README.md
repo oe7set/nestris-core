@@ -154,3 +154,8 @@ All layers are implemented and verified against the Python implementation:
 - NGF recordings produced by the recorder parse correctly in the
   NestrisLTM reference importer; record → replay round trips are
   deterministic.
+
+## License
+
+Apache License 2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Copyright 2026 Erwin Spitaler (OE7SET) – Retroverse.

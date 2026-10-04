@@ -1,0 +1,18 @@
+Retroverse NES Tetris Tournament Software
+Copyright 2026 Erwin Spitaler (OE7SET) – Retroverse
+
+This product was developed by Erwin Spitaler (OE7SET) for Retroverse.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes third-party material:
+
+Press Start 2P font (crates/nestris-qt-gui/assets/fonts/)
+  Copyright 2012 The Press Start 2P Project Authors, with Reserved Font Name
+  "Press Start 2P". Licensed under the SIL Open Font License, Version 1.1
+  (OFL.txt next to the font file).
+
+Binary distributions additionally bundle third-party components under their
+own licenses, among them: the Rust crates listed in Cargo.lock (MIT,
+Apache-2.0 and similar), Qt (LGPL-3.0, dynamically linked) in the Qt GUI, and
+FFmpeg (LGPL/GPL, https://ffmpeg.org) in the Windows bundle.
