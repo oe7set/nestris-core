@@ -250,6 +250,27 @@ impl Default for SessionSection {
     }
 }
 
+/// Updates started from NestrisLTM (`docs/STATION.md`, "Updates").
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSection {
+    /// Accept update commands at all.
+    pub enabled: bool,
+    /// esptool for reader firmware updates (Debian package `esptool`).
+    pub esptool: String,
+    pub flash_baud: u32,
+}
+
+impl Default for UpdateSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            esptool: "esptool".into(),
+            flash_baud: 460_800,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogSection {
@@ -278,6 +299,7 @@ pub struct StationConfig {
     pub session: SessionSection,
     pub integrity: IntegrityConfig,
     pub engine: EngineConfig,
+    pub update: UpdateSection,
     pub log: LogSection,
 }
 
@@ -294,6 +316,7 @@ impl Default for StationConfig {
             session: SessionSection::default(),
             integrity: IntegrityConfig::default(),
             engine: station_engine_defaults(),
+            update: UpdateSection::default(),
             log: LogSection::default(),
         }
     }
@@ -460,6 +483,11 @@ impl StationConfig {
 
     pub fn uploads_dir(&self) -> PathBuf {
         self.state_dir().join("uploads")
+    }
+
+    /// Downloaded updates and the request/result files of the root helper.
+    pub fn updates_dir(&self) -> PathBuf {
+        self.state_dir().join("updates")
     }
 
     /// Resolved config for display, secrets masked.

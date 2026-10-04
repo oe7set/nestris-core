@@ -43,6 +43,11 @@ jobs:
       - run: cargo clippy -p nestris-station --all-targets --features tls -- -D warnings
       - run: cargo install cargo-deb --locked
       - run: cargo deb -p nestris-station
+      # Install it in a clean container and exercise the update helper.
+      - name: Package test
+        run: |
+          deb=$(ls target/debian/*.deb | head -n 1)
+          docker run --rm -v "$PWD:/w" -w /w ubuntu:24.04 sh crates/nestris-station/packaging/test-package.sh "$deb"
       - uses: actions/upload-artifact@v4
         with:
           name: nestris-station-deb

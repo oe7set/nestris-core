@@ -96,6 +96,14 @@ retry_max_s = 300.0
 max_age_h = 48.0
 timeout_s = 30.0
 
+[update]
+# Updates started from NestrisLTM (docs/STATION.md, "Updates"). They need
+# [host] url + token; the files come from NestrisLTM, not from the internet.
+enabled = true
+# Reader firmware updates: esptool from the Debian package "esptool".
+esptool = "esptool"
+flash_baud = 460800
+
 [spool]
 # Undelivered game results survive network outages and restarts here.
 dir = ""

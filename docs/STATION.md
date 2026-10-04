@@ -157,7 +157,8 @@ RFC 3339 UTC with milliseconds.
 | `event/game_start` | 1, durable | a game was recognized (after `min_game_frames`) |
 | `event/cheat` | 1, durable | a cheat was confirmed |
 | `event/game_end` | 1, durable | a game ended — the result |
-| `cmd` | subscribed | commands forwarded to the RFID reader |
+| `cmd` | subscribed | commands forwarded to the RFID reader; `update` (see *Updates*) |
+| `update` | 1, retained | progress of an update started from NestrisLTM |
 
 **Durable** messages are written to the on-disk spool before publishing and
 deleted only after the broker's PUBACK. They survive network outages, broker
@@ -270,8 +271,63 @@ mosquitto_pub -t retroverse/nestris/station-1/cmd -m '{"type":"write","id":1,"na
 mosquitto_pub -t retroverse/nestris/station-1/cmd -m '{"type":"config","display":"128x64"}'
 ```
 
-Only `show`, `write` and `config` are accepted. The reader's answers
-(`result`) appear in the station log; failed commands as warnings.
+Only `show`, `write` and `config` go to the reader. The reader's answers
+(`result`) appear in the station log; failed commands as warnings. The
+station itself handles `update` (next section).
+
+## Updates (from NestrisLTM)
+
+NestrisLTM's page *Geräte* updates the station package and the reader
+firmware. Stations need no internet: the host downloads the GitHub release,
+verifies it and keeps it in its release cache; the station fetches the files
+from the host **and verifies the release signature again itself** (Ed25519
+key compiled into the station, the same as in every Retroverse app), so a
+compromised host cannot install foreign packages.
+
+```sh
+# what NestrisLTM publishes on <base>/cmd:
+{"type":"update","target":"station","release":"v0.3.0","version":"0.2.1"}
+{"type":"update","target":"reader","release":"v1.1.0","version":"1.1.0","mode":"app"}
+```
+
+- `release` is the GitHub tag; `version` the station package version
+  (`nestris-station_<version>[-<rev>]_<arch>.deb`, the station picks its
+  architecture) or the reader firmware version. `mode: "factory"` writes the
+  reader's factory image (readers still on the v1 firmware; resets the
+  reader's settings).
+- Refused (reported as `failed`) while a game runs, while another update
+  runs, with `update.enabled = false`, without `host.url`/`host.token`, and
+  for the reader without `rfid.port`.
+- Files: `GET <host.url>/api/stations/<station.id>/updates/<repo>/<release>/<file>`
+  with the host token (the same as for the recording upload); `SHA256SUMS.txt`
+  and `SHA256SUMS.txt.sig` first, then the package or the reader manifest and
+  image. Everything lands in `<state_dir>/updates/`.
+- **Station package**: the station (user `nestris`, never root) writes
+  `<state_dir>/updates/request`. The path unit `nestris-station-update.path`
+  starts the oneshot `nestris-station-update.service`, which runs
+  `/usr/lib/nestris-station/update-helper` as root: it copies the files into
+  the root-only `/var/lib/nestris-station-update/`, checks them again with
+  `nestris-station verify-update` (the installed binary), checks the package
+  name, runs `apt-get install` (downgrades allowed, config files kept) and
+  restarts the station. Its outcome (`result`) is published after the restart.
+- **Reader firmware**: the station closes the reader's port and runs
+  `esptool` (Debian package `esptool`, recommended by the station package;
+  `update.esptool`) with the image and offset from the signed release
+  manifest, then waits up to 25 s for the reader's `hello` with the new
+  version.
+
+`<base>/update` (retained):
+
+```json
+{"station":"station-1","target":"reader","version":"1.1.0","state":"flashing",
+ "detail":null,"progress":0.4,"ts":"2026-10-04T18:00:00.000Z"}
+```
+
+`state`: `downloading`, `verifying`, `installing` (the station restarts),
+`flashing`, `waiting`, `done`, `failed` (`detail` says why).
+
+By hand on a station: `sudo journalctl -u nestris-station -u nestris-station-update`,
+`nestris-station verify-update /var/lib/nestris-station-update <file.deb>`.
 
 ## Recording upload (NestrisLTM)
 

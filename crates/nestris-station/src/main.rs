@@ -14,12 +14,14 @@ mod payload;
 mod rfid;
 mod session;
 mod spool;
+mod update;
 mod upload;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -41,6 +43,7 @@ use crate::payload::{PlayerPayload, Status};
 use crate::rfid::{RfidReader, RfidSnapshot};
 use crate::session::{SessionEvent, SessionTracker, game_state_str};
 use crate::spool::Spool;
+use crate::update::{Msg as UpdateMsg, Request as UpdateRequest, Target as UpdateTarget};
 use crate::upload::{UploadJob, UploadQueue, Uploader, UploaderConfig};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -50,6 +53,8 @@ const STATUS_MIN_GAP: Duration = Duration::from_millis(500);
 /// (protocol v2, `nestris-rfid-reader/docs/PROTOCOL.md`): text on its display,
 /// writing a card, its display settings. `reboot`/`hello` stay with the station.
 const READER_COMMANDS: [&str; 3] = ["show", "write", "config"];
+/// After flashing, the reader must say hello with the new firmware within this.
+const READER_HELLO_AFTER_FLASH: Duration = Duration::from_secs(25);
 
 #[derive(Parser)]
 #[command(
@@ -99,6 +104,9 @@ enum Cmd {
         #[command(flatten)]
         cfg: ConfigArgs,
     },
+    /// Check a downloaded update (used by the root helper): the release
+    /// signature of `<dir>/SHA256SUMS.txt` and the checksum of `<dir>/<file>`.
+    VerifyUpdate { dir: PathBuf, file: String },
 }
 
 fn main() {
@@ -121,6 +129,9 @@ fn main() {
             Ok(())
         }
         Cmd::TestMqtt { cfg } => load(&cfg).and_then(test_mqtt),
+        Cmd::VerifyUpdate { dir, file } => update::verify_files(&dir, &file).map(|()| {
+            println!("{file}: signature and checksum OK");
+        }),
     };
     if let Err(e) = result {
         error!("{e:#}");
@@ -279,6 +290,16 @@ struct Station {
     fps_window: (Instant, u64),
     dropped_frames: u64,
     last_prune: Option<Instant>,
+    update: Option<UpdateRun>,
+}
+
+/// An update started from NestrisLTM (`update.rs`).
+struct UpdateRun {
+    req: UpdateRequest,
+    rx: Receiver<UpdateMsg>,
+    tx: Sender<UpdateMsg>,
+    /// Flashed: waiting for the reader's hello with the new firmware.
+    waiting_since: Option<Instant>,
 }
 
 impl Station {
@@ -355,7 +376,203 @@ impl Station {
             fps_window: (Instant::now(), 0),
             dropped_frames: 0,
             last_prune: None,
+            update: None,
         })
+        .inspect(Station::report_helper_result)
+    }
+
+    /// After a station update the root helper left a result: report it.
+    fn report_helper_result(&self) {
+        if let Some((ok, version, detail)) = update::take_result(&self.cfg.updates_dir()) {
+            if ok {
+                info!(version, "station updated");
+            } else {
+                error!(version, detail, "station update failed");
+            }
+            let installed = VERSION.to_string();
+            self.publish_update(
+                UpdateTarget::Station,
+                if ok { &installed } else { &version },
+                if ok { "done" } else { "failed" },
+                Some(detail),
+                None,
+            );
+        }
+    }
+
+    fn publish_update(
+        &self,
+        target: UpdateTarget,
+        version: &str,
+        state: &'static str,
+        detail: Option<String>,
+        progress: Option<f64>,
+    ) {
+        let event = update::UpdateEvent {
+            station: self.cfg.station.id.clone(),
+            target,
+            version: version.to_string(),
+            state,
+            detail,
+            progress,
+            ts: payload::now(),
+        };
+        if let Ok(json) = serde_json::to_string(&event) {
+            self.mqtt().publish_retained(topic::UPDATE, json);
+        }
+    }
+
+    fn start_update(&mut self, cmd: &serde_json::Value) {
+        let req = match UpdateRequest::parse(cmd) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(error = %e, "update command rejected");
+                return;
+            }
+        };
+        let refuse = |why: String| Some(why);
+        let refusal = if !self.cfg.update.enabled {
+            refuse("updates are disabled (update.enabled)".into())
+        } else if self.update.is_some() {
+            refuse("an update is already running".into())
+        } else if self.session.game_id().is_some() {
+            refuse("game running".into())
+        } else if self.cfg.host.url.is_empty() {
+            refuse("host.url is not set (updates come from NestrisLTM)".into())
+        } else if req.target == UpdateTarget::Reader && self.cfg.rfid.port.is_empty() {
+            refuse("rfid.port is not set".into())
+        } else {
+            None
+        };
+        if let Some(why) = refusal {
+            warn!(reason = %why, "update refused");
+            self.publish_update(req.target, &req.version, "failed", Some(why), None);
+            return;
+        }
+        let token = match self.cfg.host_token() {
+            Ok(Some(t)) => t,
+            _ => {
+                self.publish_update(
+                    req.target,
+                    &req.version,
+                    "failed",
+                    Some("host.token is not set".into()),
+                    None,
+                );
+                return;
+            }
+        };
+        info!(target = ?req.target, release = %req.release, version = %req.version, "update started");
+        let (tx, rx) = channel();
+        update::spawn(
+            req.clone(),
+            update::HostAccess {
+                base_url: self.cfg.host.url.clone(),
+                station: self.cfg.station.id.clone(),
+                token,
+                timeout: Duration::from_secs(300),
+            },
+            self.cfg.updates_dir(),
+            tx.clone(),
+        );
+        self.publish_update(req.target, &req.version, "downloading", None, None);
+        self.update = Some(UpdateRun {
+            req,
+            rx,
+            tx,
+            waiting_since: None,
+        });
+    }
+
+    /// Progress of a running update (called from `tick`).
+    fn poll_update(&mut self) {
+        let Some(run) = &self.update else {
+            return;
+        };
+        let msgs: Vec<UpdateMsg> = run.rx.try_iter().collect();
+        let (target, version) = (run.req.target, run.req.version.clone());
+        for msg in msgs {
+            match msg {
+                UpdateMsg::State {
+                    state,
+                    detail,
+                    progress,
+                } => self.publish_update(target, &version, state, detail, progress),
+                UpdateMsg::Flash { image, offset } => {
+                    // Free the serial port: dropping the reader joins its thread.
+                    self.rfid = None;
+                    let tx = self.update.as_ref().map(|r| r.tx.clone());
+                    if let Some(tx) = tx {
+                        info!(port = %self.cfg.rfid.port, offset = format!("{offset:#x}"), "flashing the reader");
+                        update::spawn_flash(
+                            self.cfg.update.esptool.clone(),
+                            self.cfg.rfid.port.clone(),
+                            self.cfg.update.flash_baud,
+                            image,
+                            offset,
+                            tx,
+                        );
+                    }
+                    self.publish_update(target, &version, "flashing", None, Some(0.0));
+                }
+                UpdateMsg::Flashed(result) => {
+                    self.rfid = self
+                        .cfg
+                        .rfid
+                        .enabled
+                        .then(|| RfidReader::start(self.cfg.rfid.clone()));
+                    match result {
+                        Ok(()) => {
+                            if let Some(run) = self.update.as_mut() {
+                                run.waiting_since = Some(Instant::now());
+                            }
+                            self.publish_update(target, &version, "waiting", None, None);
+                        }
+                        Err(e) => return self.finish_update(false, e),
+                    }
+                }
+                UpdateMsg::Requested => {
+                    // The root helper installs and restarts the station; the
+                    // result is reported by the next start.
+                    self.publish_update(
+                        target,
+                        &version,
+                        "installing",
+                        Some("the station restarts".into()),
+                        None,
+                    );
+                    self.update = None;
+                    return;
+                }
+                UpdateMsg::Failed(e) => return self.finish_update(false, e),
+            }
+        }
+        let waiting = self.update.as_ref().and_then(|r| r.waiting_since);
+        if let Some(since) = waiting {
+            let fw = self.rfid_snapshot().info.map(|i| i.fw);
+            if fw.as_deref() == Some(version.as_str()) {
+                self.finish_update(true, format!("reader reports {version}"));
+            } else if since.elapsed() > READER_HELLO_AFTER_FLASH {
+                let got = fw.unwrap_or_else(|| "nothing".into());
+                self.finish_update(
+                    false,
+                    format!("reader reports {got} after flashing, expected {version}"),
+                );
+            }
+        }
+    }
+
+    fn finish_update(&mut self, ok: bool, detail: String) {
+        let Some(run) = self.update.take() else {
+            return;
+        };
+        if ok {
+            info!(detail, "update done");
+        } else {
+            error!(detail, "update failed");
+        }
+        let state = if ok { "done" } else { "failed" };
+        self.publish_update(run.req.target, &run.req.version, state, Some(detail), None);
     }
 
     fn mqtt(&self) -> &MqttLink {
@@ -604,6 +821,7 @@ impl Station {
         for cmd in self.mqtt().take_commands() {
             self.handle_command(&cmd);
         }
+        self.poll_update();
 
         let rfid = self.rfid_snapshot();
         let rfid_state = match &self.rfid {
@@ -685,7 +903,7 @@ impl Station {
         ));
     }
 
-    fn handle_command(&self, raw: &str) {
+    fn handle_command(&mut self, raw: &str) {
         let parsed: Option<serde_json::Value> = serde_json::from_str(raw).ok();
         let kind = parsed
             .as_ref()
@@ -700,6 +918,11 @@ impl Station {
             }
             (Some(kind), None) if READER_COMMANDS.contains(&kind) => {
                 warn!(kind, "command ignored: RFID reader disabled");
+            }
+            (Some("update"), _) => {
+                if let Some(cmd) = &parsed {
+                    self.start_update(cmd);
+                }
             }
             _ => warn!(command = raw, "ignoring unknown command"),
         }

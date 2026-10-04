@@ -1,0 +1,24 @@
+{
+  "name": "nestris-rfid-reader",
+  "version": "1.0.0",
+  "board": "esp32dev",
+  "chip": "esp32",
+  "proto": 2,
+  "files": [
+    {
+      "kind": "factory",
+      "name": "nestris-rfid-reader-1.0.0-esp32dev.bin",
+      "offset": "0x0",
+      "size": 418384,
+      "sha256": "4ba7854318bab5f069ca2e81c08af8c79ce68f2d2a353aa5dc5ae636ff69d647"
+    },
+    {
+      "kind": "app",
+      "name": "nestris-rfid-reader-1.0.0-esp32dev-app.bin",
+      "offset": "0x10000",
+      "size": 352848,
+      "sha256": "767660e856d640a586520734c440f1bf8123e9d7748a4dd9097784b54b379c91"
+    }
+  ],
+  "notes": "Updates flash the 'app' file at its offset (keeps the reader's settings); 'factory' is for new readers and erases the settings."
+}

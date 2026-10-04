@@ -1,0 +1,8 @@
+[Unit]
+Description=Install a verified nestris-station update
+Documentation=https://github.com/oe7set/nestris-core/blob/main/docs/STATION.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nestris-station/update-helper
+TimeoutStartSec=600

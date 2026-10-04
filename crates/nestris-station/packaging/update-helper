@@ -1,0 +1,60 @@
+#!/bin/sh
+# Root half of the station updater (started by nestris-station-update.path).
+#
+# The station (unprivileged user "nestris") downloads and verifies a package,
+# then writes /var/lib/nestris-station/updates/request ("deb=<file>"). This
+# helper copies the files into a root-only directory, verifies them again with
+# the installed (root-owned) binary - the station's own check is not trusted -
+# installs the package and restarts the station. The outcome goes to
+# .../updates/result, which the station reports after its restart.
+set -u
+
+SRC=/var/lib/nestris-station/updates
+WORK=/var/lib/nestris-station-update
+REQ="$SRC/request"
+
+result() { # ok version detail
+    detail=$(printf '%s' "$3" | tr -d '"\' | tr '\n' ' ' | cut -c1-300)
+    printf '{"ok":%s,"version":"%s","detail":"%s"}\n' "$1" "$2" "$detail" > "$SRC/result.tmp"
+    chown nestris:nestris "$SRC/result.tmp" 2>/dev/null || true
+    mv "$SRC/result.tmp" "$SRC/result"
+}
+
+[ -f "$REQ" ] || exit 0
+DEB=$(sed -n 's/^deb=//p' "$REQ" | head -n 1)
+rm -f "$REQ"
+
+case "$DEB" in
+    */* | .*) result false "" "bad request"; exit 1 ;;
+    nestris-station_*.deb) ;;
+    *) result false "" "bad request"; exit 1 ;;
+esac
+
+rm -rf "$WORK"
+install -d -m 0700 "$WORK"
+if ! cp "$SRC/$DEB" "$SRC/SHA256SUMS.txt" "$SRC/SHA256SUMS.txt.sig" "$WORK/"; then
+    result false "" "update files missing"
+    exit 1
+fi
+rm -f "$SRC/$DEB"
+
+if ! out=$(/usr/bin/nestris-station verify-update "$WORK" "$DEB" 2>&1); then
+    result false "" "verification failed: $out"
+    exit 1
+fi
+if [ "$(dpkg-deb -f "$WORK/$DEB" Package 2>/dev/null)" != "nestris-station" ]; then
+    result false "" "not a nestris-station package"
+    exit 1
+fi
+VERSION=$(dpkg-deb -f "$WORK/$DEB" Version)
+
+export DEBIAN_FRONTEND=noninteractive
+if apt-get install -y --allow-downgrades -o Dpkg::Options::=--force-confold \
+        "$WORK/$DEB" > "$WORK/apt.log" 2>&1; then
+    result true "$VERSION" "installed $VERSION"
+    systemctl restart nestris-station.service
+    rm -rf "$WORK"
+else
+    result false "$VERSION" "apt-get failed: $(tail -n 2 "$WORK/apt.log")"
+    exit 1
+fi

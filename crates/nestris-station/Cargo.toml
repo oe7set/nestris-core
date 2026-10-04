@@ -32,6 +32,9 @@ tracing = "0.1"
 # Recording upload to the NestrisLTM host (plain HTTP on the LAN, no TLS).
 ureq = { version = "3", default-features = false }
 sha2 = "0.10"
+# Release signatures of updates (docs/STATION.md, "Updates").
+ed25519-dalek = "2"
+base64 = "0.22"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(unix)'.dependencies]
@@ -52,6 +55,8 @@ copyright = "Retroverse"
 section = "games"
 priority = "optional"
 depends = "$auto, ffmpeg, adduser"
+# Reader firmware updates run esptool (docs/STATION.md, "Updates").
+recommends = "esptool"
 extended-description = """\
 Headless NES-Tetris tournament station: captures the console picture from a \
 USB capture device, recognizes score/lines/level and statistics, attributes \
@@ -61,6 +66,7 @@ maintainer-scripts = "packaging/debian/"
 conf-files = ["/etc/nestris-station/station.toml", "/etc/nestris-station/env"]
 assets = [
     ["target/release/nestris-station", "usr/bin/", "755"],
+    ["packaging/update-helper", "usr/lib/nestris-station/update-helper", "755"],
     ["packaging/station.example.toml", "etc/nestris-station/station.toml", "640"],
     ["packaging/env.example", "etc/nestris-station/env", "640"],
     ["packaging/station.example.toml", "usr/share/doc/nestris-station/station.example.toml", "644"],
@@ -68,4 +74,9 @@ assets = [
     ["../../LICENSE", "usr/share/doc/nestris-station/LICENSE", "644"],
     ["../../NOTICE", "usr/share/doc/nestris-station/NOTICE", "644"],
 ]
-systemd-units = { unit-scripts = "packaging/", enable = true, start = false }
+# The station itself, and the root helper that installs updates the station
+# downloaded (a path unit watching <state>/updates/request + a oneshot service).
+systemd-units = [
+    { unit-scripts = "packaging/", enable = true, start = false },
+    { unit-scripts = "packaging/", unit-name = "nestris-station-update", enable = true, start = true },
+]

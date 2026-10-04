@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch for nestris-station update requests from the station
+Documentation=https://github.com/oe7set/nestris-core/blob/main/docs/STATION.md
+
+[Path]
+# Written by the station (user nestris) after it downloaded and verified a
+# package; the root helper verifies again before installing anything.
+PathExists=/var/lib/nestris-station/updates/request
+Unit=nestris-station-update.service
+
+[Install]
+WantedBy=multi-user.target

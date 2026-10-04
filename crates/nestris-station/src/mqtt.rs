@@ -43,6 +43,8 @@ pub mod topic {
     pub const GAME_END: &str = "event/game_end";
     pub const CHEAT: &str = "event/cheat";
     pub const CMD: &str = "cmd";
+    /// Progress of an update started from NestrisLTM (retained).
+    pub const UPDATE: &str = "update";
 }
 
 struct Conn {

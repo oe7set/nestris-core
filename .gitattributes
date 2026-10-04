@@ -1,0 +1,3 @@
+crates/nestris-station/tests/data/* -text
+crates/nestris-station/packaging/update-helper text eol=lf
+crates/nestris-station/packaging/test-package.sh text eol=lf
