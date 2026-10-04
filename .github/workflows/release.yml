@@ -1,7 +1,10 @@
 name: Release
 
 # Tag `vX.Y.Z` to publish a release; workflow_dispatch runs the full build
-# as a dry-run (artifacts only, no GitHub release).
+# as a dry-run (artifacts only, no GitHub release). The release carries the
+# desktop/web zips, the station packages (nestris-station_<v>_<arch>.deb) and
+# SHA256SUMS.txt signed with the secret RELEASE_SIGNING_KEY (the apps'
+# updaters verify it, see nestris-ltm/docs/UPDATES.md).
 on:
   push:
     tags: ["v*"]
@@ -211,8 +214,40 @@ jobs:
           path: out/*.zip
           if-no-files-found: error
 
+  # The headless station as Debian packages. Built inside Debian 12
+  # (bookworm), the stations' OS: a binary built on the Ubuntu runner would
+  # need a newer glibc than the stations have.
+  station:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    container: debian:bookworm
+    steps:
+      - name: Build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: station-${{ matrix.arch }}
+      - run: cargo install cargo-deb --locked
+      - run: cargo deb -p nestris-station
+      - uses: actions/upload-artifact@v4
+        with:
+          name: station-${{ matrix.arch }}
+          path: target/debian/*.deb
+          if-no-files-found: error
+
   release:
-    needs: [desktop, web]
+    needs: [desktop, web, station]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
@@ -220,11 +255,21 @@ jobs:
         with:
           merge-multiple: true
           path: dist
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
       - name: Checksums
-        run: cd dist && sha256sum *.zip > SHA256SUMS
+        run: cd dist && sha256sum *.zip *.deb > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: astral-sh/setup-uv@v6
+      - name: Sign checksums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: uv run --script .github/scripts/sign_release.py sign dist/SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
             dist/*.zip
-            dist/SHA256SUMS
+            dist/*.deb
+            dist/SHA256SUMS.txt
+            dist/SHA256SUMS.txt.sig

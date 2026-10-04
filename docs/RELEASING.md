@@ -13,7 +13,9 @@ per OS.
 | `nestris-qt-gui-vX.Y.Z-<os>.zip` | Qt GUI with the Qt runtime: windeployqt folder (Windows), `Nestris Core.app` (macOS, ad-hoc signed), AppImage (Linux) + `QT-NOTICE.md` |
 | `nestris-vX.Y.Z-<os>-bundle.zip` | Everything above + `README.md`, `LICENSE`, `docs/` |
 | `nestris-web-vX.Y.Z.zip` | Static web app (`web/dist`, SIMD wasm) — serve from any web server |
-| `SHA256SUMS` | Checksums of all zips |
+| `nestris-station_<v>-1_amd64.deb`, `..._arm64.deb` | the headless station for Debian 12 (built in a `debian:bookworm` container: matching glibc) |
+| `SHA256SUMS.txt` | checksums of all zips and packages |
+| `SHA256SUMS.txt.sig` | Ed25519 signature of `SHA256SUMS.txt` (secret `RELEASE_SIGNING_KEY`; the station updater in NestrisLTM checks it, see `nestris-ltm/docs/UPDATES.md`) |
 
 OS suffixes: `windows-x64`, `linux-x64`, `macos-arm64`.
 
@@ -21,6 +23,11 @@ ffmpeg/ffprobe are runtime prerequisites for video/capture input and are
 NOT bundled.
 
 ## Cutting a release
+
+The repository secret `RELEASE_SIGNING_KEY` must be set (Settings → Secrets
+and variables → Actions); without it the release job fails rather than
+publishing an unsigned release. The station's version is its own
+(`crates/nestris-station/Cargo.toml`), the tag is the workspace version.
 
 1. Bump the version in **both** places (the Qt crate is an excluded
    standalone workspace and does not inherit the root version):
