@@ -257,7 +257,15 @@ jobs:
           path: dist
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            CHANGELOG.md
+            Cargo.toml
+          sparse-checkout-cone-mode: false
+      - name: Check tag matches the workspace version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME does not match Cargo.toml $version"; exit 1; }
       - name: Checksums
         run: cd dist && sha256sum *.zip *.deb > SHA256SUMS.txt && cat SHA256SUMS.txt
       - uses: astral-sh/setup-uv@v6
@@ -265,8 +273,11 @@ jobs:
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: uv run --script .github/scripts/sign_release.py sign dist/SHA256SUMS.txt
+      - name: Release notes from CHANGELOG.md
+        run: uv run --script .github/scripts/release_notes.py "${GITHUB_REF_NAME}" CHANGELOG.md dist-notes/RELEASE_NOTES.md
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: dist-notes/RELEASE_NOTES.md
           generate_release_notes: true
           files: |
             dist/*.zip

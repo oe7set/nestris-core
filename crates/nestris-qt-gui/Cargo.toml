@@ -1,7 +1,7 @@
 [package]
 name = "nestris-qt-gui"
 description = "Qt 6 desktop GUI (cxx-qt + QML): NestrisChamps-style live dashboard"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/ErwinSpitaler/nestris-core"
