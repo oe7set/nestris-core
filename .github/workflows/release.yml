@@ -254,10 +254,7 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          merge-multiple: true
-          path: dist
+      # Checkout first: it cleans the workspace and would delete dist/.
       - uses: actions/checkout@v4
         with:
           sparse-checkout: |
@@ -265,6 +262,10 @@ jobs:
             CHANGELOG.md
             Cargo.toml
           sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
       - name: Check tag matches the workspace version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
