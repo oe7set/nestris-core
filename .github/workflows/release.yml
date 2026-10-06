@@ -277,8 +277,11 @@ jobs:
         run: uv run --script .github/scripts/release_notes.py "${GITHUB_REF_NAME}" CHANGELOG.md dist-notes/RELEASE_NOTES.md
       - uses: softprops/action-gh-release@v2
         with:
+          name: nestris-core ${{ github.ref_name }}
           body_path: dist-notes/RELEASE_NOTES.md
-          generate_release_notes: true
+          # Pre-release only for semver pre-release tags (v1.2.0-beta.1).
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') && 'true' || 'false' }}
           files: |
             dist/*.zip
             dist/*.deb
