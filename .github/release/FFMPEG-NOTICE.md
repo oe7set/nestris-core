@@ -4,15 +4,15 @@ This distribution bundles unmodified `ffmpeg.exe` and `ffprobe.exe`
 binaries (in the `ffmpeg/` directory) so video decoding and DirectShow
 capture work without a separate ffmpeg installation.
 
-- **Build**: BtbN FFmpeg-Builds, release 7.1 branch (win64, GPL variant),
-  tag `autobuild-2026-07-05-15-08`, asset
-  `ffmpeg-n7.1.5-1-g7d0e842004-win64-gpl-7.1.zip`.
+- **Build**: gyan.dev "essentials" build of FFmpeg 8.1.2 (win64, GPL),
+  release `8.1.2` of <https://github.com/GyanD/codexffmpeg>, asset
+  `ffmpeg-8.1.2-essentials_build.zip` (SHA-256 checked when building).
 - **License**: **GNU General Public License v3** (the binaries are
   invoked as separate executables — mere aggregation; the license of this
-  application itself is unaffected). License texts and build provenance:
-  <https://github.com/BtbN/FFmpeg-Builds>.
-- **Source code**: <https://ffmpeg.org/download.html> and the exact build
-  scripts at <https://github.com/BtbN/FFmpeg-Builds>.
+  application itself is unaffected). License text: `LICENSE` in the
+  archive; build details: <https://www.gyan.dev/ffmpeg/builds/>.
+- **Source code**: <https://ffmpeg.org/download.html> (release 8.1.2) and
+  <https://github.com/GyanD/codexffmpeg>.
 - **Replacing the bundled binaries**: point the `NESTRIS_FFMPEG`
   environment variable at a directory containing your own
   `ffmpeg.exe`/`ffprobe.exe` — it always takes precedence over the

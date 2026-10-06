@@ -27,7 +27,9 @@ jobs:
             suffix: windows-x64
           - os: ubuntu-latest
             suffix: linux-x64
-          - os: macos-latest
+          # Pinned: Qt 6.8.3's headers do not compile with the newer Xcode of
+          # macos-latest (macOS 26: implicit __yield in qyieldcpu.h).
+          - os: macos-15
             suffix: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
@@ -69,17 +71,18 @@ jobs:
           Copy-Item crates/nestris-qt-gui/target/release/nestris-qt-gui.exe stage/qt-gui/
           windeployqt --release --qmldir crates/nestris-qt-gui/qml --no-translations stage/qt-gui/nestris-qt-gui.exe
 
-      # Bundle ffmpeg+ffprobe (Windows only): pinned BtbN build, checksum-
+      # Bundle ffmpeg+ffprobe (Windows only): pinned gyan.dev release build
+      # (versioned GitHub releases stay available, unlike BtbN autobuilds), checksum-
       # verified. tool_path() finds them in the ffmpeg/ dir next to each exe
       # (NESTRIS_FFMPEG still overrides). See .github/release/FFMPEG-NOTICE.md.
       - name: Bundle ffmpeg (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $tag = "autobuild-2026-07-05-15-08"
-          $asset = "ffmpeg-n7.1.5-1-g7d0e842004-win64-gpl-7.1"
-          $sha256 = "67A3927DDA13A4BF17710CACE9A673B68A47176B34BF89D7E55898F6045EE545"
-          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$asset.zip" -OutFile ffmpeg.zip
+          $version = "8.1.2"
+          $asset = "ffmpeg-$version-essentials_build"
+          $sha256 = "DB580001CAA24AC104C8CB856CD113A87B0A443F7BDF47D8C12B1D740584A2EC"
+          Invoke-WebRequest -Uri "https://github.com/GyanD/codexffmpeg/releases/download/$version/$asset.zip" -OutFile ffmpeg.zip
           $actual = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash
           if ($actual -ne $sha256) { throw "ffmpeg checksum mismatch: $actual" }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dist
