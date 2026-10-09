@@ -43,6 +43,10 @@ def main() -> int:
     notes = section(changelog.read_text(encoding="utf-8"), version)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(notes, encoding="utf-8")
+    # The Windows runner's console is cp1252: arrows and the like in the
+    # changelog would crash the echo (the file above is UTF-8 anyway).
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print(notes or f"(no section for {version} in {changelog})")
     return 0
 
