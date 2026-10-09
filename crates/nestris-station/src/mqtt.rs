@@ -45,6 +45,8 @@ pub mod topic {
     pub const CMD: &str = "cmd";
     /// Progress of an update started from NestrisLTM (retained).
     pub const UPDATE: &str = "update";
+    /// The remote configuration state (retained, `remote.rs`).
+    pub const CONFIG: &str = "config";
 }
 
 struct Conn {

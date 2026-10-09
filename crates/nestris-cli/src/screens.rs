@@ -22,7 +22,7 @@ use nestris_engine::processor::FrameProcessor;
 use nestris_engine::state::screen_sig::{
     COLS, ROWS, ScreenKind, ScreenRef, SignatureMatcher, TILES, TileGrid, content_box,
 };
-use nestris_host::capture_ffmpeg::VideoDecoder;
+use nestris_host::capture_ffmpeg::{FileOptions, InputKind, LiveOptions, VideoDecoder};
 use nestris_host::recalib_thread::RecalibThread;
 use nestris_vision::Image;
 
@@ -50,9 +50,8 @@ pub enum ScreensCmd {
     Eval {
         #[arg(long)]
         input: String,
-        /// Real frame rate for files muxed with a wrong rate.
-        #[arg(long)]
-        fps: Option<f64>,
+        #[command(flatten)]
+        decode: DecodeArgs,
         /// Label file: `start end state [margin]` per line (seconds).
         #[arg(long)]
         labels: Option<PathBuf>,
@@ -99,7 +98,7 @@ pub fn run(cmd: ScreensCmd) -> Result<()> {
         } => refs(&spec, &videos, &out, samples.as_deref()),
         ScreensCmd::Eval {
             input,
-            fps,
+            decode,
             labels,
             config,
             set,
@@ -110,7 +109,7 @@ pub fn run(cmd: ScreensCmd) -> Result<()> {
             let cfg = config_load::load(config.as_deref(), None, &set)?;
             eval(
                 &input,
-                fps,
+                &decode,
                 labels.as_deref(),
                 cfg,
                 timeline,
@@ -137,16 +136,74 @@ pub fn run(cmd: ScreensCmd) -> Result<()> {
     }
 }
 
-pub fn open(input: &str, start: f64, fps: Option<f64>) -> Result<VideoDecoder> {
-    match fps {
-        Some(fps) => VideoDecoder::open_file_with_fps(input, start, fps),
-        None => VideoDecoder::open(input, start),
+/// How a source is decoded (shared by `run`, `bench` and `screens eval`).
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct DecodeArgs {
+    /// Real frame rate of a file muxed with a wrong one (e.g. `50` for a
+    /// 50 fps capture stored as 25 fps); timestamps and --start use it.
+    #[arg(long)]
+    pub fps: Option<f64>,
+    /// Scale frames to WxH before the engine (e.g. `360x288`), as a
+    /// station's `capture.scale_width/height` does.
+    #[arg(long, value_name = "WxH", value_parser = parse_size)]
+    pub scale: Option<(usize, usize)>,
+    /// MJPEG decode at 1/2^N size (0-3), as a station's `capture.lowres`.
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=3))]
+    pub lowres: u8,
+}
+
+impl DecodeArgs {
+    pub fn with_fps(fps: Option<f64>) -> Self {
+        Self {
+            fps,
+            ..Self::default()
+        }
     }
+}
+
+pub fn parse_size(s: &str) -> std::result::Result<(usize, usize), String> {
+    let (w, h) = s
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("expected WxH, got {s:?}"))?;
+    let w: usize = w
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad width in {s:?}"))?;
+    let h: usize = h
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad height in {s:?}"))?;
+    if w == 0 || h == 0 {
+        return Err(format!("size must be positive, got {s:?}"));
+    }
+    Ok((w, h))
+}
+
+pub fn open(input: &str, start: f64, decode: &DecodeArgs) -> Result<VideoDecoder> {
+    if InputKind::of(input).is_live() {
+        let mut live = LiveOptions {
+            lowres: decode.lowres,
+            ..LiveOptions::default()
+        };
+        if let Some((w, h)) = decode.scale {
+            (live.width, live.height) = (w, h);
+        }
+        return VideoDecoder::open_with(input, start, &live);
+    }
+    VideoDecoder::open_file(
+        input,
+        start,
+        &FileOptions {
+            fps: decode.fps,
+            scale: decode.scale,
+            lowres: decode.lowres,
+        },
+    )
 }
 
 /// Lock the geometry on the gameplay around `at` and return its rectifier.
 fn acquire_rectifier(input: &str, at: f64, fps: Option<f64>) -> Result<Rectifier> {
-    let mut decoder = open(input, at, fps)?;
+    let mut decoder = open(input, at, &DecodeArgs::with_fps(fps))?;
     let rate = decoder.info().fps;
     let mut processor = FrameProcessor::new(engine_config(true));
     let mut locked_for = 0u32;
@@ -300,7 +357,7 @@ fn refs(spec_path: &Path, videos: &Path, out: &Path, samples: Option<&Path>) -> 
                 let start = r[0].as_f64().context("range start")?;
                 let end = r[1].as_f64().context("range end")?;
                 let stride = r.get(2).and_then(|v| v.as_u64()).unwrap_or(1).max(1);
-                let mut decoder = open(&file, start, fps)?;
+                let mut decoder = open(&file, start, &DecodeArgs::with_fps(fps))?;
                 let frames = ((end - start) * decoder.info().fps) as u64;
                 let mut taken = 0u64;
                 for i in 0..frames {
@@ -449,9 +506,9 @@ struct SigStat {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn eval(
+pub fn eval(
     input: &str,
-    fps: Option<f64>,
+    decode: &DecodeArgs,
     labels: Option<&Path>,
     cfg: nestris_engine::config::EngineConfig,
     timeline: u64,
@@ -460,7 +517,7 @@ fn eval(
 ) -> Result<EvalSummary> {
     let segments = labels.map(parse_labels).transpose()?.unwrap_or_default();
     let background = cfg.calibration.background_recalibration;
-    let mut decoder = open(input, 0.0, fps)?;
+    let mut decoder = open(input, 0.0, decode)?;
     let mut processor = FrameProcessor::new(cfg);
     let mut recalib = background.then(RecalibThread::start);
     let matcher = SignatureMatcher::builtin();
@@ -666,7 +723,7 @@ fn dump(
         .transpose()?;
     let matcher = SignatureMatcher::builtin();
     for &t in at {
-        let mut decoder = open(input, t, fps)?;
+        let mut decoder = open(input, t, &DecodeArgs::with_fps(fps))?;
         let Some(frame) = decoder.next_frame()? else {
             bail!("no frame at {t}s");
         };
@@ -712,9 +769,19 @@ fn dump(
 mod tests {
     use super::*;
 
+    #[test]
+    fn sizes_parse() {
+        assert_eq!(parse_size("360x288"), Ok((360, 288)));
+        assert_eq!(parse_size("640X512"), Ok((640, 512)));
+        assert!(parse_size("360").is_err());
+        assert!(parse_size("0x288").is_err());
+        assert!(parse_size("ax288").is_err());
+    }
+
     /// Full station captures against their hand labels. Needs the videos:
     /// `NESTRIS_SCREEN_VIDEOS=<absolute dir with aufnahme_*.mkv> cargo test --release
-    /// -p nestris-cli -- --ignored station_captures`.
+    /// -p nestris-cli -- --ignored station_captures`. Set
+    /// `NESTRIS_SCREEN_SCALE` / `NESTRIS_SCREEN_LOWRES` to test a downscale.
     #[test]
     #[ignore = "needs the capture videos (NESTRIS_SCREEN_VIDEOS)"]
     fn station_captures() {
@@ -723,6 +790,17 @@ mod tests {
             return;
         };
         let labels = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/screens");
+        // Optional downscale variant (docs/DOWNSCALE.md):
+        // NESTRIS_SCREEN_SCALE=360x288, NESTRIS_SCREEN_LOWRES=1.
+        let decode = DecodeArgs {
+            fps: Some(50.0),
+            scale: std::env::var("NESTRIS_SCREEN_SCALE")
+                .ok()
+                .map(|s| parse_size(&s).unwrap()),
+            lowres: std::env::var("NESTRIS_SCREEN_LOWRES")
+                .ok()
+                .map_or(0, |s| s.parse().unwrap()),
+        };
         // (capture, real game starts)
         for (name, starts) in [
             ("aufnahme_20260930-233153", vec![50.5, 115.1]),
@@ -734,7 +812,7 @@ mod tests {
             let input = PathBuf::from(&dir).join(format!("{name}.mkv"));
             let summary = eval(
                 &input.to_string_lossy(),
-                Some(50.0),
+                &decode,
                 Some(&labels.join(format!("{name}.labels.tsv"))),
                 nestris_engine::config::EngineConfig::default(),
                 0,

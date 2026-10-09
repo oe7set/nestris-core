@@ -7,13 +7,16 @@
 //! component reconnects on its own, and the watchdog restarts the process
 //! if the main loop ever wedges. See `docs/STATION.md`.
 
+mod bench;
 mod config;
 mod health;
 mod mqtt;
 mod payload;
+mod remote;
 mod rfid;
 mod session;
 mod spool;
+mod telemetry;
 mod update;
 mod upload;
 
@@ -30,19 +33,23 @@ use nestris_engine::enums::GameState;
 use nestris_engine::output::OutputFrame;
 use nestris_engine::processor::FrameProcessor;
 use nestris_host::capture_ffmpeg;
-use nestris_host::capture_supervisor::{CaptureMsg, CaptureStatus, CaptureSupervisor, Recv};
+use nestris_host::capture_supervisor::{
+    CaptureMsg, CaptureStats, CaptureStatus, CaptureSupervisor, Recv,
+};
 use nestris_host::recalib_thread::RecalibThread;
 use nestris_host::recording::RecordingSink;
 use nestris_ngf::recorder::{GameRecorder, RecorderConfig};
 use tracing::{error, info, warn};
 
-use crate::config::{DEFAULT_CONFIG, StationConfig};
+use crate::config::{DEFAULT_CONFIG, LoadedConfig, StationConfig};
 use crate::health::Watchdog;
 use crate::mqtt::{MqttLink, topic};
-use crate::payload::{PlayerPayload, Status};
+use crate::payload::{ConfigReport, Devices, PlayerPayload, Status};
+use crate::remote::{RemoteDoc, RemoteStatus};
 use crate::rfid::{RfidReader, RfidSnapshot};
 use crate::session::{SessionEvent, SessionTracker, game_state_str};
 use crate::spool::Spool;
+use crate::telemetry::Telemetry;
 use crate::update::{Msg as UpdateMsg, Request as UpdateRequest, Target as UpdateTarget};
 use crate::upload::{UploadJob, UploadQueue, Uploader, UploaderConfig};
 
@@ -99,6 +106,29 @@ enum Cmd {
     },
     /// List capture devices and serial ports.
     ListDevices,
+    /// Measure the capture + engine pipeline on this machine (no MQTT):
+    /// a video file paced at its real rate, or the configured device (stop
+    /// the service first).
+    Bench {
+        #[command(flatten)]
+        cfg: ConfigArgs,
+        /// Video file to feed instead of `capture.device`.
+        #[arg(long)]
+        input: Option<PathBuf>,
+        /// Real frame rate of a file muxed with a wrong one (e.g. `50` for
+        /// the MS2109 captures stored as 25 fps).
+        #[arg(long)]
+        fps: Option<f64>,
+        /// Start position in the file, seconds.
+        #[arg(long, default_value_t = 0.0)]
+        start: f64,
+        /// Measure this long, seconds.
+        #[arg(long, default_value_t = 60.0)]
+        seconds: f64,
+        /// Print the summary as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Connect to the broker, publish a test status and report.
     TestMqtt {
         #[command(flatten)]
@@ -112,9 +142,24 @@ enum Cmd {
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
-        Cmd::Run { cfg, replay, fast } => load(&cfg).and_then(|c| run(c, replay, fast)),
-        Cmd::CheckConfig { cfg } => load(&cfg).and_then(|c| {
+        Cmd::Run { cfg, replay, fast } => {
+            load_full(&cfg).and_then(|loaded| run(loaded, ConfigSource::of(&cfg), replay, fast))
+        }
+        Cmd::CheckConfig { cfg } => load_full(&cfg).and_then(|loaded| {
+            let c = loaded.cfg;
             println!("{}", serde_json::to_string_pretty(&c.masked())?);
+            match loaded.remote.state {
+                "none" => {}
+                "rejected" => eprintln!(
+                    "remote config rev {:?} REJECTED and set aside: {}",
+                    loaded.remote.rev,
+                    loaded.remote.error.as_deref().unwrap_or("")
+                ),
+                _ => eprintln!(
+                    "remote config rev {:?} from NestrisLTM: {}",
+                    loaded.remote.rev, loaded.remote.values
+                ),
+            }
             c.mqtt_password().context("mqtt.password_file")?;
             eprintln!(
                 "config OK: capture {}, topics {}/#, state dir {}",
@@ -129,6 +174,32 @@ fn main() {
             Ok(())
         }
         Cmd::TestMqtt { cfg } => load(&cfg).and_then(test_mqtt),
+        Cmd::Bench {
+            mut cfg,
+            input,
+            fps,
+            start,
+            seconds,
+            json,
+        } => {
+            // No broker or reader is involved; the file replaces the device.
+            let mut sets = vec![
+                "mqtt.host=bench".to_string(),
+                "rfid.enabled=false".to_string(),
+            ];
+            if let Some(input) = &input {
+                sets.push(format!("capture.device=file:{}", input.display()));
+            }
+            sets.append(&mut cfg.set);
+            cfg.set = sets;
+            let args = bench::BenchArgs {
+                fps,
+                start,
+                seconds,
+                json,
+            };
+            load(&cfg).and_then(|c| bench::run(c, &args, &AtomicBool::new(false)))
+        }
         Cmd::VerifyUpdate { dir, file } => update::verify_files(&dir, &file).map(|()| {
             println!("{file}: signature and checksum OK");
         }),
@@ -140,14 +211,42 @@ fn main() {
     }
 }
 
+/// Where the configuration came from: needed again to check remote sets.
+#[derive(Clone, Debug)]
+struct ConfigSource {
+    path: Option<PathBuf>,
+    set: Vec<String>,
+}
+
+impl ConfigSource {
+    fn of(args: &ConfigArgs) -> Self {
+        Self {
+            path: args.config.exists().then(|| args.config.clone()),
+            set: args.set.clone(),
+        }
+    }
+}
+
 fn load(args: &ConfigArgs) -> Result<StationConfig> {
+    load_full(args).map(|loaded| loaded.cfg)
+}
+
+/// The configuration with the remote layer set from NestrisLTM.
+fn load_full(args: &ConfigArgs) -> Result<LoadedConfig> {
     let path = args.config.exists().then_some(args.config.as_path());
     if path.is_none() && args.config != Path::new(DEFAULT_CONFIG) {
         bail!("config file {} not found", args.config.display());
     }
-    let cfg = StationConfig::load(path, &args.set)?;
-    init_logging(&cfg.log.level);
-    Ok(cfg)
+    let loaded = StationConfig::load_full(path, &args.set)?;
+    init_logging(&loaded.cfg.log.level);
+    if loaded.remote.state == "rejected" {
+        warn!(
+            rev = ?loaded.remote.rev,
+            error = loaded.remote.error.as_deref().unwrap_or(""),
+            "remote config rejected, running on the local config"
+        );
+    }
+    Ok(loaded)
 }
 
 fn init_logging(level: &str) {
@@ -171,6 +270,32 @@ fn init_logging(level: &str) {
         error!("panic: {info}");
         default_hook(info);
     }));
+}
+
+/// Capture devices with their formats, and serial ports (Linux).
+fn scan_devices() -> Devices {
+    let capture = capture_ffmpeg::list_v4l2_devices()
+        .into_iter()
+        .map(|path| {
+            let formats = capture_ffmpeg::v4l2_formats_text(&path)
+                .map(|text| remote::parse_v4l2_formats(&text))
+                .unwrap_or_default();
+            remote::CaptureDevice {
+                path: path.display().to_string(),
+                formats,
+            }
+        })
+        .collect();
+    let mut serial: Vec<String> = std::fs::read_dir("/dev/serial/by-id")
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path().display().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    serial.sort();
+    Devices { capture, serial }
 }
 
 fn list_devices() {
@@ -244,13 +369,31 @@ fn shutdown_flag() -> Result<Arc<AtomicBool>> {
     Ok(term)
 }
 
-fn run(cfg: StationConfig, replay: Option<PathBuf>, fast: bool) -> Result<()> {
-    info!(station = %cfg.station.id, version = VERSION, "starting");
+fn run(
+    loaded: LoadedConfig,
+    source: ConfigSource,
+    replay: Option<PathBuf>,
+    fast: bool,
+) -> Result<()> {
+    let LoadedConfig {
+        cfg,
+        remote,
+        locked,
+    } = loaded;
+    info!(station = %cfg.station.id, version = VERSION, remote = remote.state, rev = ?remote.rev, "starting");
     let term = shutdown_flag()?;
     let spool = Arc::new(Spool::open(cfg.spool_dir(), cfg.spool.max_files)?);
     let pending = spool.list().len();
     info!(dir = %spool.dir().display(), pending, "message spool ready");
     let mut station = Station::new(cfg, spool)?;
+    station.remote = RemoteConfig {
+        source,
+        status: remote,
+        locked,
+        devices: None,
+        dirty: true,
+        restart_after_game: false,
+    };
     let mut watchdog = Watchdog::new();
     watchdog.ready();
 
@@ -286,11 +429,27 @@ struct Station {
     live_interval: Duration,
     last_live_at: Instant,
     last_live_key: String,
-    fps: f64,
-    fps_window: (Instant, u64),
+    telemetry: Telemetry,
     dropped_frames: u64,
+    /// Sequence number of the next `live` message (gaps = lost messages).
+    live_seq: u64,
     last_prune: Option<Instant>,
     update: Option<UpdateRun>,
+    remote: RemoteConfig,
+    /// Leave the main loop for a restart (systemd starts us again).
+    exit_for_restart: bool,
+}
+
+/// The remote configuration as this process knows it (`remote.rs`).
+struct RemoteConfig {
+    source: ConfigSource,
+    status: RemoteStatus,
+    locked: Vec<String>,
+    devices: Option<Devices>,
+    /// The `config` topic needs publishing.
+    dirty: bool,
+    /// A new set is stored; restart once no game runs.
+    restart_after_game: bool,
 }
 
 /// An update started from NestrisLTM (`update.rs`).
@@ -351,6 +510,7 @@ impl Station {
             Duration::from_secs_f64(cfg.rfid.player_grace_s.max(0.0)),
         );
         let live_interval = Duration::from_secs_f64(1.0 / cfg.mqtt.live_max_hz);
+        let telemetry = Telemetry::new((cfg.capture.fps > 0.0).then_some(cfg.capture.fps));
         Ok(Station {
             cfg,
             mqtt: Some(mqtt),
@@ -372,11 +532,23 @@ impl Station {
             live_interval,
             last_live_at: Instant::now() - live_interval,
             last_live_key: String::new(),
-            fps: 0.0,
-            fps_window: (Instant::now(), 0),
+            telemetry,
             dropped_frames: 0,
+            live_seq: 0,
             last_prune: None,
             update: None,
+            remote: RemoteConfig {
+                source: ConfigSource {
+                    path: None,
+                    set: Vec::new(),
+                },
+                status: RemoteStatus::none(),
+                locked: Vec::new(),
+                devices: None,
+                dirty: true,
+                restart_after_game: false,
+            },
+            exit_for_restart: false,
         })
         .inspect(Station::report_helper_result)
     }
@@ -585,20 +757,26 @@ impl Station {
         let background = self.cfg.engine.calibration.background_recalibration;
         let mut recalib = background.then(RecalibThread::start);
         let mut down_since: Option<Instant> = Some(Instant::now());
-        while !term.load(Ordering::Relaxed) {
+        while !term.load(Ordering::Relaxed) && !self.exit_for_restart {
             match supervisor.recv(Duration::from_millis(200)) {
-                Recv::Msg(CaptureMsg::Frame(frame)) => {
+                Recv::Msg(CaptureMsg::Frame(frame, read_at)) => {
                     if let Some(since) = down_since.take() {
                         self.session.capture_gap(since.elapsed().as_secs_f64());
                     }
+                    let t0 = Instant::now();
                     let result = catch_unwind(AssertUnwindSafe(|| processor.process(&frame)));
                     match result {
                         Ok(out) => {
                             if let Some(recalib) = &mut recalib {
                                 recalib.drive(&mut processor, &frame);
                             }
+                            let engine_ms = t0.elapsed().as_secs_f64() * 1000.0;
                             self.lock = format!("{:?}", processor.lock_state()).to_lowercase();
-                            self.handle_output(&out);
+                            let age = || read_at.elapsed().as_secs_f64() * 1000.0;
+                            self.handle_output(&out, Some(&age));
+                            let size = (frame.image.width, frame.image.height);
+                            self.telemetry
+                                .frame(Some(engine_ms), Some(age()), Some(size));
                         }
                         Err(_) => {
                             error!(seq = frame.seq, "engine panicked; rebuilding it");
@@ -607,7 +785,6 @@ impl Station {
                             self.session.engine_restart();
                         }
                     }
-                    self.count_frame();
                 }
                 Recv::Msg(CaptureMsg::Status(status)) => {
                     let ended = status == CaptureStatus::Ended;
@@ -627,7 +804,9 @@ impl Station {
                 let events = self.session.capture_down_for(since.elapsed().as_secs_f64());
                 self.publish_events(events);
             }
-            self.dropped_frames = supervisor.dropped_frames();
+            let stats = supervisor.stats();
+            self.dropped_frames = stats.dropped;
+            self.telemetry.roll(stats);
             self.tick(watchdog);
         }
         supervisor.stop();
@@ -659,8 +838,12 @@ impl Station {
                 }
             }
             let out = engine.output_at(index);
-            self.handle_output(&out);
-            self.count_frame();
+            self.handle_output(&out, None);
+            self.telemetry.frame(None, None, None);
+            self.telemetry.roll(CaptureStats {
+                delivered: index as u64 + 1,
+                ..CaptureStats::default()
+            });
             self.tick(watchdog);
         }
         // Let the end-of-game logic see the recording's end: feed game-over
@@ -669,7 +852,7 @@ impl Station {
         tail.game_state = GameState::GameOver;
         tail.events.clear();
         for _ in 0..=self.cfg.session.end_confirm_frames {
-            self.handle_output(&tail);
+            self.handle_output(&tail, None);
         }
         // Give the MQTT link a moment to flush the result.
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -687,7 +870,8 @@ impl Station {
         self.rfid.as_ref().map(|r| r.snapshot()).unwrap_or_default()
     }
 
-    fn handle_output(&mut self, out: &OutputFrame) {
+    /// `age_ms`: how long ago the frame was read from the capture.
+    fn handle_output(&mut self, out: &OutputFrame, age_ms: Option<&dyn Fn() -> f64>) {
         self.game_state = out.game_state;
         let rfid = self.rfid_snapshot();
         let events = self.session.push(out, &rfid);
@@ -720,9 +904,13 @@ impl Station {
             let key = serde_json::to_string(&live).unwrap_or_default();
             if key != self.last_live_key {
                 live.ts = ts;
+                live.seq = Some(self.live_seq);
+                live.frame_age_ms = age_ms.map(|age| (age() * 10.0).round() / 10.0);
+                self.live_seq += 1;
                 if let Ok(json) = serde_json::to_string(&live) {
                     self.mqtt().publish_live(topic::LIVE, &json);
                 }
+                self.telemetry.live_sent();
                 self.last_live_key = key;
                 self.last_live_at = Instant::now();
             }
@@ -807,21 +995,16 @@ impl Station {
         self.capture_detail = detail;
     }
 
-    fn count_frame(&mut self) {
-        self.fps_window.1 += 1;
-        let elapsed = self.fps_window.0.elapsed();
-        if elapsed >= Duration::from_secs(2) {
-            self.fps = (self.fps_window.1 as f64 / elapsed.as_secs_f64() * 10.0).round() / 10.0;
-            self.fps_window = (Instant::now(), 0);
-        }
-    }
-
     /// Periodic work: commands, player, status, pruning, watchdog.
     fn tick(&mut self, watchdog: &mut Watchdog) {
         for cmd in self.mqtt().take_commands() {
             self.handle_command(&cmd);
         }
         self.poll_update();
+        self.poll_remote_restart();
+        if self.remote.dirty && self.mqtt().connected() {
+            self.publish_config();
+        }
 
         let rfid = self.rfid_snapshot();
         let rfid_state = match &self.rfid {
@@ -860,6 +1043,7 @@ impl Station {
             game_id: self.session.game_id().map(str::to_owned),
             fps: 0.0,
             dropped_frames: 0,
+            perf: None,
             uptime_s: 0,
             ts: String::new(),
         };
@@ -870,8 +1054,9 @@ impl Station {
         // Changes go out promptly but at most every STATUS_MIN_GAP (a
         // flickering game state must not flood a retained topic).
         if (changed && since >= STATUS_MIN_GAP) || since >= interval {
-            status.fps = self.fps;
+            status.fps = self.telemetry.fps();
             status.dropped_frames = self.dropped_frames;
+            status.perf = self.telemetry.perf().cloned();
             status.uptime_s = self.started.elapsed().as_secs();
             status.ts = payload::now();
             if let Ok(json) = serde_json::to_string(&status) {
@@ -890,8 +1075,9 @@ impl Station {
             );
         }
 
+        let perf = self.telemetry.perf().cloned().unwrap_or_default();
         watchdog.tick(&format!(
-            "capture {}, rfid {}, mqtt {}, {:.0} fps",
+            "capture {}, rfid {}, mqtt {}, {:.0}/{:.0} fps, {:.1}% dropped",
             self.capture,
             rfid_state,
             if self.mqtt().connected() {
@@ -899,7 +1085,9 @@ impl Station {
             } else {
                 "offline"
             },
-            self.fps
+            perf.fps,
+            perf.capture_fps,
+            perf.drop_rate * 100.0
         ));
     }
 
@@ -924,7 +1112,99 @@ impl Station {
                     self.start_update(cmd);
                 }
             }
+            (Some("station_config"), _) => {
+                if let Some(cmd) = &parsed {
+                    self.station_config(cmd);
+                }
+            }
             _ => warn!(command = raw, "ignoring unknown command"),
+        }
+    }
+
+    /// `{"type":"station_config","op":"get"|"list_devices"|"set",...}`.
+    fn station_config(&mut self, cmd: &serde_json::Value) {
+        let op = cmd.get("op").and_then(|o| o.as_str()).unwrap_or("get");
+        match op {
+            "get" => {}
+            "list_devices" => self.remote.devices = Some(scan_devices()),
+            "set" => self.set_remote_config(cmd),
+            other => warn!(op = other, "unknown station_config op"),
+        }
+        self.remote.dirty = true;
+    }
+
+    fn set_remote_config(&mut self, cmd: &serde_json::Value) {
+        let Some(rev) = cmd.get("rev").and_then(|r| r.as_u64()) else {
+            warn!("station_config set without a rev ignored");
+            return;
+        };
+        let values = cmd
+            .get("values")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let current = &self.remote.status;
+        if current.rev == Some(rev) && current.values == values && current.state != "rejected" {
+            return; // a repeat (e.g. after a reconnect): nothing to do
+        }
+        let source = &self.remote.source;
+        let checked = StationConfig::check_remote(source.path.as_deref(), &values, &source.set)
+            .and_then(|_| {
+                let doc = RemoteDoc {
+                    rev,
+                    values: values.clone(),
+                };
+                remote::write(&remote::path(&self.cfg.state_dir()), &doc)
+            });
+        if let Err(e) = checked {
+            let error = format!("{e:#}");
+            warn!(rev, error = %error, "remote config rejected");
+            self.remote.status.rev = Some(rev);
+            self.remote.status.state = "rejected";
+            self.remote.status.error = Some(error);
+            return;
+        }
+        info!(rev, values = %values, "remote config stored");
+        self.remote.status = RemoteStatus {
+            rev: Some(rev),
+            state: "pending",
+            error: None,
+            values,
+        };
+        self.remote.restart_after_game = true;
+    }
+
+    /// Restart for a stored remote config once no game is running.
+    fn poll_remote_restart(&mut self) {
+        if !self.remote.restart_after_game
+            || self.session.game_id().is_some()
+            || self.update.is_some()
+        {
+            return;
+        }
+        info!(rev = ?self.remote.status.rev, "restarting to apply the remote config");
+        self.remote.status.state = "restarting";
+        self.publish_config();
+        self.remote.restart_after_game = false;
+        self.exit_for_restart = true;
+    }
+
+    fn publish_config(&mut self) {
+        let report = ConfigReport {
+            station: self.cfg.station.id.clone(),
+            version: VERSION,
+            rev: self.remote.status.rev,
+            state: self.remote.status.state,
+            error: self.remote.status.error.clone(),
+            values: self.remote.status.values.clone(),
+            effective: serde_json::to_value(self.cfg.masked()).unwrap_or_default(),
+            locked: self.remote.locked.clone(),
+            allowed: remote::ALLOWED,
+            devices: self.remote.devices.clone(),
+            ts: payload::now(),
+        };
+        if let Ok(json) = serde_json::to_string(&report) {
+            self.mqtt().publish_retained(topic::CONFIG, json);
+            self.remote.dirty = false;
         }
     }
 

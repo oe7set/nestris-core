@@ -148,6 +148,18 @@ pub fn list_v4l2_devices() -> Vec<PathBuf> {
     out
 }
 
+/// The formats and sizes a V4L2 device offers, as ffmpeg prints them
+/// (`-list_formats all`; parse the text, it is meant for humans).
+pub fn v4l2_formats_text(device: &Path) -> Result<String> {
+    let output = tool_command("ffmpeg")
+        .args(["-hide_banner", "-f", "v4l2", "-list_formats", "all", "-i"])
+        .arg(device)
+        .output()
+        .context("spawn ffmpeg (install ffmpeg or set NESTRIS_FFMPEG)")?;
+    // Printed on stderr; ffmpeg exits non-zero by design.
+    Ok(String::from_utf8_lossy(&output.stderr).into_owned())
+}
+
 /// List DirectShow capture devices (Windows) via ffmpeg.
 pub fn list_devices() -> Result<String> {
     let output = tool_command("ffmpeg")
@@ -181,6 +193,9 @@ pub struct LiveOptions {
     /// Frames are scaled to this size so the frame layout is known up front.
     pub width: usize,
     pub height: usize,
+    /// MJPEG decode at 1/2^n size (`-lowres`, 0-3): far cheaper than
+    /// decoding the full picture and scaling it down afterwards.
+    pub lowres: u8,
 }
 
 impl Default for LiveOptions {
@@ -192,8 +207,33 @@ impl Default for LiveOptions {
             fps: None,
             width: 1280,
             height: 720,
+            lowres: 0,
         }
     }
+}
+
+/// File decoding options. The defaults decode at the native size and the
+/// container's frame rate.
+#[derive(Clone, Debug, Default)]
+pub struct FileOptions {
+    /// The real frame rate when the container's is wrong (e.g. a 50 fps
+    /// capture muxed as 25 fps): frames are stamped `seq / fps` and `start`
+    /// is in real seconds.
+    pub fps: Option<f64>,
+    /// Scale frames to this size (what a station feeds its engine).
+    pub scale: Option<(usize, usize)>,
+    /// MJPEG decode at 1/2^n size, as [`LiveOptions::lowres`].
+    pub lowres: u8,
+}
+
+/// The highest `-lowres` ffmpeg's MJPEG decoder accepts.
+pub const MAX_LOWRES: u8 = 3;
+
+/// The frame size ffmpeg's MJPEG decoder produces at `lowres`
+/// (`AV_CEIL_RSHIFT`).
+pub fn lowres_size(width: usize, height: usize, lowres: u8) -> (usize, usize) {
+    let n = lowres.min(MAX_LOWRES);
+    (width.div_ceil(1 << n), height.div_ceil(1 << n))
 }
 
 /// Source kinds recognized in an input string.
@@ -258,6 +298,7 @@ fn live_input_args(input: &str, kind: InputKind, opts: &LiveOptions) -> Vec<Stri
             // supervisor restarts it.
             push(&["-rw_timeout", "5000000"]);
         }
+        push_lowres(&mut push, opts.lowres);
         push(&["-i", input, "-an"]);
     } else {
         push(&["-thread_queue_size", "64"]);
@@ -281,12 +322,20 @@ fn live_input_args(input: &str, kind: InputKind, opts: &LiveOptions) -> Vec<Stri
         if let Some(fps) = opts.fps.filter(|f| *f > 0.0) {
             push(&["-framerate", &format!("{fps}")]);
         }
+        push_lowres(&mut push, opts.lowres);
         push(&["-i", &device]);
     }
     // Live sources cannot be ffprobe'd before opening; scale to a known size
     // so the frame layout is fixed.
     push(&["-vf", &format!("scale={}:{}", opts.width, opts.height)]);
     args
+}
+
+/// `-lowres N` (a decoder option, so it goes before `-i`).
+fn push_lowres(push: &mut impl FnMut(&[&str]), lowres: u8) {
+    if lowres > 0 {
+        push(&["-lowres", &lowres.min(MAX_LOWRES).to_string()]);
+    }
 }
 
 /// Lines of ffmpeg stderr kept for diagnostics.
@@ -330,34 +379,86 @@ impl VideoDecoder {
         Self::open_with(input, start, &LiveOptions::default())
     }
 
-    /// Open `input` with explicit live-capture options.
+    /// Open `input` with explicit live-capture options (a file opens with
+    /// the default [`FileOptions`]).
     pub fn open_with(input: &str, start: f64, opts: &LiveOptions) -> Result<VideoDecoder> {
         let kind = InputKind::of(input);
-        let live = kind.is_live();
+        if !kind.is_live() {
+            return Self::open_file(input, start, &FileOptions::default());
+        }
         let mut cmd = tool_command("ffmpeg");
         cmd.args(["-hide_banner", "-nostdin", "-v", "error"]);
-        let mut info;
-        if live {
-            cmd.args(live_input_args(input, kind, opts));
-            info = VideoInfo {
-                width: opts.width,
-                height: opts.height,
-                fps: opts.fps.unwrap_or(60.0),
-                duration_s: None,
-            };
-        } else {
-            info = probe(input)?;
-            if start > 0.0 {
-                cmd.arg("-ss").arg(format!("{start}"));
-            }
-            cmd.args(["-i", input]);
-            // Emit each decoded frame exactly once. Without this, ffmpeg's
-            // default CFR behavior duplicates frames on variable-frame-rate
-            // sources (phone captures), shifting frame indexes against any
-            // decode-order consumer (PyAV in the Python oracle drifted a
-            // full second on the WIN fixtures).
-            cmd.args(["-fps_mode", "passthrough"]);
+        cmd.args(live_input_args(input, kind, opts));
+        let info = VideoInfo {
+            width: opts.width,
+            height: opts.height,
+            fps: opts.fps.unwrap_or(60.0),
+            duration_s: None,
+        };
+        Self::spawn(cmd, info, true)
+    }
+
+    /// Open a file at `start` seconds (real seconds when `opts.fps` is set).
+    pub fn open_file(input: &str, start: f64, opts: &FileOptions) -> Result<VideoDecoder> {
+        if InputKind::of(input).is_live() {
+            bail!("file options only apply to files");
         }
+        let mut info = probe(input)?;
+        let tagged = info.fps.max(1.0);
+        let real_fps = match opts.fps {
+            Some(fps) if fps.is_nan() || fps <= 0.0 => bail!("invalid fps {fps}"),
+            Some(fps) => fps,
+            None => tagged,
+        };
+        let mut cmd = tool_command("ffmpeg");
+        cmd.args(["-hide_banner", "-nostdin", "-v", "error"]);
+        // Seek in container time.
+        let seek = start * real_fps / tagged;
+        if seek > 0.0 {
+            cmd.arg("-ss").arg(format!("{seek}"));
+        }
+        let mut push = |items: &[&str]| {
+            cmd.args(items);
+        };
+        push_lowres(&mut push, opts.lowres);
+        cmd.args(["-i", input]);
+        // Emit each decoded frame exactly once. Without this, ffmpeg's
+        // default CFR behavior duplicates frames on variable-frame-rate
+        // sources (phone captures), shifting frame indexes against any
+        // decode-order consumer (PyAV in the Python oracle drifted a
+        // full second on the WIN fixtures).
+        cmd.args(["-fps_mode", "passthrough"]);
+        // Always scale to an explicit size when lowres is on: a codec
+        // without lowres support decodes at full size and would otherwise
+        // break the frame layout.
+        let size = opts.scale.or_else(|| {
+            (opts.lowres > 0).then(|| lowres_size(info.width, info.height, opts.lowres))
+        });
+        if let Some((w, h)) = size {
+            cmd.args(["-vf", &format!("scale={w}:{h}")]);
+            info.width = w;
+            info.height = h;
+        }
+        info.fps = real_fps;
+        info.duration_s = info.duration_s.map(|d| d * tagged / real_fps);
+        Self::spawn(cmd, info, false)
+    }
+
+    /// Open a file whose container frame rate is wrong (e.g. a 50 fps
+    /// capture muxed as 25 fps): frames are stamped `seq / fps` and `start`
+    /// is in real seconds.
+    pub fn open_file_with_fps(input: &str, start: f64, fps: f64) -> Result<VideoDecoder> {
+        Self::open_file(
+            input,
+            start,
+            &FileOptions {
+                fps: Some(fps),
+                ..FileOptions::default()
+            },
+        )
+    }
+
+    fn spawn(mut cmd: Command, mut info: VideoInfo, live: bool) -> Result<VideoDecoder> {
         if info.width == 0 || info.height == 0 {
             bail!("invalid frame size {}x{}", info.width, info.height);
         }
@@ -392,23 +493,6 @@ impl VideoDecoder {
             live,
             started: std::time::Instant::now(),
         })
-    }
-
-    /// Open a file whose container frame rate is wrong (e.g. a 50 fps
-    /// capture muxed as 25 fps): frames are stamped `seq / fps` and `start`
-    /// is in real seconds.
-    pub fn open_file_with_fps(input: &str, start: f64, fps: f64) -> Result<VideoDecoder> {
-        if InputKind::of(input).is_live() {
-            bail!("--fps only applies to files");
-        }
-        if fps.is_nan() || fps <= 0.0 {
-            bail!("invalid fps {fps}");
-        }
-        let tagged = probe(input)?.fps.max(1.0);
-        let mut decoder = Self::open(input, start * fps / tagged)?;
-        decoder.info.fps = fps;
-        decoder.info.duration_s = decoder.info.duration_s.map(|d| d * tagged / fps);
-        Ok(decoder)
     }
 
     pub fn info(&self) -> &VideoInfo {
@@ -492,7 +576,32 @@ mod tests {
             fps: Some(50.0),
             width: 720,
             height: 576,
+            lowres: 0,
         }
+    }
+
+    #[test]
+    fn lowres_sizes() {
+        assert_eq!(lowres_size(720, 576, 0), (720, 576));
+        assert_eq!(lowres_size(720, 576, 1), (360, 288));
+        assert_eq!(lowres_size(720, 576, 2), (180, 144));
+        assert_eq!(lowres_size(1279, 719, 1), (640, 360));
+        assert_eq!(lowres_size(720, 576, 9), (90, 72));
+    }
+
+    #[test]
+    fn v4l2_lowres_goes_before_input() {
+        let o = LiveOptions {
+            lowres: 1,
+            width: 360,
+            height: 288,
+            ..opts()
+        };
+        let args = live_input_args("v4l2:/dev/video0", InputKind::V4l2, &o).join(" ");
+        assert!(
+            args.ends_with("-framerate 50 -lowres 1 -i /dev/video0 -vf scale=360:288"),
+            "{args}"
+        );
     }
 
     #[test]

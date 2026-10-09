@@ -270,6 +270,8 @@ impl SessionTracker {
             } else {
                 None
             },
+            seq: None,
+            frame_age_ms: None,
             ts: payload::now(),
         }
     }

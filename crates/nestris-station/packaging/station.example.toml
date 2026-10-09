@@ -38,6 +38,10 @@ fps = 60
 # capture size (no distorting up-scale), e.g. 720 x 576 for PAL.
 scale_width = 1280
 scale_height = 720
+# Smaller engine sizes save no CPU and below 480 px wide the playfield is
+# no longer found reliably (docs/DOWNSCALE.md). MJPEG decode at 1/2^n size
+# (0-3); keep 0.
+lowres = 0
 # No frame for this many seconds restarts the capture.
 stall_timeout_s = 5.0
 backoff_max_s = 30.0

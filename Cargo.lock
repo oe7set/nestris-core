@@ -2441,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "nestris-android"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nestris-engine",
  "nestris-vision",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "nestris-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2460,12 +2460,13 @@ dependencies = [
  "nestris-ngf",
  "nestris-vision",
  "png 0.17.16",
+ "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "nestris-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nestris-vision",
  "png 0.17.16",
@@ -2477,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "nestris-gui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "eframe",
  "egui",
@@ -2489,7 +2490,7 @@ dependencies = [
 
 [[package]]
 name = "nestris-gui-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2505,7 +2506,7 @@ dependencies = [
 
 [[package]]
 name = "nestris-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2522,7 +2523,7 @@ dependencies = [
 
 [[package]]
 name = "nestris-ngf"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "nestris-engine",
@@ -2532,7 +2533,7 @@ dependencies = [
 
 [[package]]
 name = "nestris-station"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2557,7 +2558,7 @@ dependencies = [
 
 [[package]]
 name = "nestris-vision"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "png 0.17.16",
  "rayon",
@@ -2567,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "nestris-wasm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nestris-engine",
  "nestris-ngf",

@@ -120,9 +120,16 @@ Precedence (later wins):
 1. built-in defaults,
 2. the config file (deep-merged: a partial `[engine.fusion]` table keeps
    every other default),
-3. environment `NESTRIS_STATION__<SECTION>__<KEY>=value` (e.g. from
+3. the remote configuration set from NestrisLTM
+   (`/var/lib/nestris-station/remote.json`, see *Remote configuration*),
+4. environment `NESTRIS_STATION__<SECTION>__<KEY>=value` (e.g. from
    `/etc/nestris-station/env`),
-4. `--set section.key=value` on the command line.
+5. `--set section.key=value` on the command line.
+
+With NestrisLTM managing the stations, keep only the station's identity and
+secrets local (`station.id`, `mqtt.host`, passwords/tokens, `rfid.port` if
+it differs) and set everything else from NestrisLTM: an env or `--set` value
+always wins and is shown there as locked.
 
 Unknown keys are errors, so typos never pass silently. Secrets: put the MQTT
 password in `mqtt.password_file` (mode 0600) or as
@@ -132,7 +139,7 @@ password in `mqtt.password_file` (mode 0600) or as
 | Section | Key settings |
 |---|---|
 | `station` | `id` (topic + game-id prefix), `name`, `state_dir` (default: systemd `StateDirectory`, `/var/lib/nestris-station`) |
-| `capture` | `device` (device path or stream URL), `input_format`, `width`/`height`/`fps`, `scale_width`/`scale_height`, `stall_timeout_s` (5), `backoff_max_s` (30) |
+| `capture` | `device` (device path or stream URL), `input_format`, `width`/`height`/`fps`, `scale_width`/`scale_height`, `lowres` (0: MJPEG decode at 1/2^n size, see [DOWNSCALE.md](DOWNSCALE.md)), `stall_timeout_s` (5), `backoff_max_s` (30) |
 | `rfid` | `enabled`, `port`, `baud` (115200), `stale_after_s` (6: no line for this long = reopen the port), `player_grace_s` (60) |
 | `mqtt` | `host`, `port`, `username`, `password_file`, `tls`/`ca_file`, `topic_prefix` (`retroverse/nestris`), `live_max_hz` (60), `live_playfield` (true), `status_interval_s` (10) |
 | `recording` | `enabled`, `dir`, `keep_days` (30), `max_gb` (20) |
@@ -159,6 +166,7 @@ RFC 3339 UTC with milliseconds.
 | `event/game_end` | 1, durable | a game ended — the result |
 | `cmd` | subscribed | commands forwarded to the RFID reader; `update` (see *Updates*) |
 | `update` | 1, retained | progress of an update started from NestrisLTM |
+| `config` | 1, retained | remote configuration state (since 0.3.0, see *Remote configuration*) |
 
 **Durable** messages are written to the on-disk spool before publishing and
 deleted only after the broker's PUBACK. They survive network outages, broker
@@ -171,9 +179,34 @@ host must deduplicate by `game_id` (+ topic).
 {"state":"online","station":"station-1","name":"Station 1","version":"0.2.0",
  "capture":"ok","capture_detail":"1280x720","lock":"locked","game_state":"in_game",
  "rfid":"ok","reader_fw":"1.0.0","reader_serial":"A4CF12B3C4D5",
- "game_id":"station-1-1790241008228","fps":60.0,"dropped_frames":0,
+ "game_id":"station-1-1790241008228","fps":50.0,"dropped_frames":0,
+ "perf":{"capture_fps":50.0,"fps":50.0,"target_fps":50.0,"drop_rate":0.0,
+         "missing":0,"dropped_total":0,"missing_total":3,
+         "engine_ms_p50":6.1,"engine_ms_p95":11.8,"frame_age_ms_p95":13.2,
+         "live_hz":31.5,"size":"720x576","cpu_pct":62.0,"load1":1.9},
  "uptime_s":3605,"ts":"2026-09-24T09:10:08.228Z"}
 ```
+
+`perf` (since 0.3.0, absent until the first 2-second window closed) is the
+pipeline's performance over the last 2 seconds:
+
+| Field | Meaning |
+|---|---|
+| `capture_fps` | frames ffmpeg delivered per second |
+| `fps` | frames the engine processed per second (same as top-level `fps`) |
+| `target_fps` | `capture.fps`, `null` when the driver chooses |
+| `drop_rate` | share of delivered frames dropped because the engine fell behind (0-1) |
+| `missing` / `missing_total` | frames the source never delivered: gaps longer than 1.5 frame periods in the capture clock (drops inside the device, driver or ffmpeg), this window / since start |
+| `dropped_total` | frames dropped since start (as `dropped_frames`) |
+| `engine_ms_p50` / `engine_ms_p95` | engine time per frame |
+| `frame_age_ms_p95` | from reading a frame off ffmpeg until its result is out (queue wait + engine) |
+| `live_hz` | `live` messages sent per second (only changes are sent) |
+| `size` | engine input size (`capture.scale_*`) |
+| `cpu_pct` / `load1` | whole-machine CPU use and 1-minute load (Linux) |
+
+`capture_fps` below `target_fps`, or `missing` above 0, points at the
+camera, USB or decode; `drop_rate` above 0 means the CPU is too slow for the
+engine input size (lower `capture.scale_*` or set `capture.lowres`).
 
 `capture`: `ok`, `opening`, `waiting_for_device` (unplugged), `reconnecting`
 (`capture_detail` has ffmpeg's error and the retry delay). `rfid`: `ok`,
@@ -198,10 +231,15 @@ current `nestris-rfid-reader` firmware), `disabled`. `reader_fw` /
  "tetris_rate":1.0,"burn":0,"drought":3,"max_drought":9,"pps":0.9876,"pieces":12,
  "cheated":0,"confidence":0.95,
  "playfield":["0000000000","0000000000","...","0000000110","2221103311"],
- "ts":"..."}
+ "seq":18822,"frame_age_ms":7.4,"ts":"..."}
 ```
 
 `game_id` is `null` between games (menus still update `game_state`).
+
+`seq` (since 0.3.0) counts the `live` messages since the station started:
+a gap at the receiver means messages were lost (QoS 0), a lower value means
+the station restarted. `frame_age_ms` is the time from reading the frame off
+the capture to publishing it.
 
 `playfield` is the stack, top row first: 20 strings of 10 cell ids — `0`
 empty, `1` white, `2`/`3` the two accent colors of the current level's
@@ -273,7 +311,56 @@ mosquitto_pub -t retroverse/nestris/station-1/cmd -m '{"type":"config","display"
 
 Only `show`, `write` and `config` go to the reader. The reader's answers
 (`result`) appear in the station log; failed commands as warnings. The
-station itself handles `update` (next section).
+station itself handles `update` (next section) and `station_config`
+(*Remote configuration*).
+
+## Remote configuration (from NestrisLTM)
+
+Since 0.3.0 NestrisLTM's *Stationen → Konfiguration* sets the station
+config: a template for all stations plus per-station overrides. NestrisLTM
+always sends the complete set; its `rev` is a hash of the values.
+
+```sh
+# store and apply (after the running game)
+mosquitto_pub -t retroverse/nestris/station-1/cmd -m   '{"type":"station_config","op":"set","rev":42,"values":{"capture":{"scale_width":480,"scale_height":384}}}'
+# re-publish the config topic / scan capture devices and serial ports
+mosquitto_pub -t retroverse/nestris/station-1/cmd -m '{"type":"station_config","op":"get"}'
+mosquitto_pub -t retroverse/nestris/station-1/cmd -m '{"type":"station_config","op":"list_devices"}'
+```
+
+On `set` the station checks the keys against its allowlist and validates
+the merged config. A valid set is written to
+`<state_dir>/remote.json` (atomically; the previous one stays as
+`remote.json.bak`) and the station exits after the running game;
+systemd (`Restart=always`) starts it again with the new config about
+3 seconds later. A set it rejects changes nothing. A `remote.json` that no
+longer validates at startup (e.g. after a downgrade) is renamed to
+`remote.json.rejected` and the station runs on its local config.
+
+Remote-settable: `station.name`, `capture.*`, `rfid.enabled`, `rfid.port`,
+`mqtt.live_max_hz`, `mqtt.live_playfield`, `mqtt.status_interval_s`,
+`recording.enabled/gzip/keep_days/max_gb`, `session.*`, `integrity.*`,
+`engine.*`, `log.level`. Never remote: the station id, broker, host URL and
+token, paths and updates, so a bad set can always be corrected remotely.
+
+`<base>/config` (retained) after every change, on start and on `get`:
+
+```json
+{"station":"station-1","version":"0.3.0","rev":42,"state":"applied","error":null,
+ "values":{"capture":{"scale_width":480,"scale_height":384}},
+ "effective":{"station":{"id":"station-1","...":"..."},"capture":{"...":"..."}},
+ "locked":["station.id"],"allowed":["station.name","capture.","..."],
+ "devices":{"capture":[{"path":"/dev/v4l/by-id/usb-MACROSILICON_..-video-index0",
+   "formats":[{"format":"mjpeg","sizes":["1920x1080","720x576"]}]}],
+   "serial":["/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"]},
+ "ts":"..."}
+```
+
+`state`: `none` (no remote set), `applied`, `pending` (stored, applies after
+the running game), `restarting`, `rejected` (`error` says why; `rev` is the
+rejected set's, `values` the set still in effect). `effective` is the config
+the process runs with, secrets masked. `locked` lists the keys the
+environment or `--set` pin. `devices` is only present after `list_devices`.
 
 ## Updates (from NestrisLTM)
 
@@ -443,6 +530,12 @@ nestris-station run -c station.toml --set rfid.enabled=false \
 # A video file through the full capture pipeline:
 nestris-station run -c station.toml --set rfid.enabled=false \
     --set capture.device=file:/path/capture.mp4 --set capture.pace_files=true
+
+# Capture + engine performance on this machine (no broker needed), e.g.
+# with a downscaled engine input; prints fps, drops, engine ms, CPU:
+nestris-station bench -c station.toml --input /path/capture.mkv --fps 50     --start 250 --seconds 60 --set capture.lowres=1
+# ... or the live device (stop the service first, it holds the device):
+sudo systemctl stop nestris-station && nestris-station bench -c station.toml
 
 # Real recorded game with an injected +10 000 (unit test, skipped when unset):
 NESTRIS_SAMPLE_NGF=game.ngf cargo test -p nestris-station recorded_game

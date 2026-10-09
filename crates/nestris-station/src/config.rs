@@ -1,5 +1,6 @@
-//! Station configuration: `/etc/nestris-station/station.toml`, then
-//! `NESTRIS_STATION__SECTION__FIELD` environment overrides, then `--set`.
+//! Station configuration: `/etc/nestris-station/station.toml`, then the
+//! overrides set from NestrisLTM (`remote.rs`, [`StationConfig::load_full`]),
+//! then `NESTRIS_STATION__SECTION__FIELD` environment overrides, then `--set`.
 //!
 //! The file is deep-merged over the station defaults (not deserialized on its
 //! own), so a partial `[engine.fusion]` table keeps the station's engine
@@ -11,11 +12,13 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use nestris_engine::config::EngineConfig;
 use nestris_engine::integrity::IntegrityConfig;
-use nestris_host::capture_ffmpeg::LiveOptions;
+use nestris_host::capture_ffmpeg::{FileOptions, LiveOptions, MAX_LOWRES};
 use nestris_host::capture_supervisor::SupervisorConfig;
 use nestris_host::config_overlay;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::remote::{self, RemoteStatus};
 
 pub const ENV_PREFIX: &str = "NESTRIS_STATION";
 pub const DEFAULT_CONFIG: &str = "/etc/nestris-station/station.toml";
@@ -58,6 +61,9 @@ pub struct CaptureSection {
     /// Frames are scaled to this size for the engine.
     pub scale_width: usize,
     pub scale_height: usize,
+    /// MJPEG decode at 1/2^n size (0-3) before scaling: much cheaper than
+    /// a full decode on a weak CPU (see docs/DOWNSCALE.md).
+    pub lowres: u8,
     /// No frame for this long restarts the capture.
     pub stall_timeout_s: f64,
     /// Maximum restart backoff.
@@ -77,6 +83,7 @@ impl Default for CaptureSection {
             fps: 60.0,
             scale_width: 1280,
             scale_height: 720,
+            lowres: 0,
             stall_timeout_s: 5.0,
             backoff_max_s: 30.0,
             pace_files: true,
@@ -333,15 +340,100 @@ fn station_engine_defaults() -> EngineConfig {
     cfg
 }
 
+/// A loaded configuration and the state of its remote layer.
+pub struct LoadedConfig {
+    pub cfg: StationConfig,
+    pub remote: RemoteStatus,
+    /// Keys the environment or `--set` pin (they win over remote values).
+    pub locked: Vec<String>,
+}
+
 impl StationConfig {
-    /// Load: defaults ← file (deep merge) ← environment ← `--set`.
+    /// Load: defaults ← file (deep merge) ← environment ← `--set`, without
+    /// the remote layer.
+    #[cfg(test)]
     pub fn load(path: Option<&Path>, overrides: &[String]) -> Result<StationConfig> {
+        Self::load_layers(path, None, overrides)
+    }
+
+    /// Load with the remote layer from the state directory. A stored remote
+    /// set that no longer validates is set aside and reported `rejected`;
+    /// the station then runs on the local layers alone.
+    pub fn load_full(path: Option<&Path>, overrides: &[String]) -> Result<LoadedConfig> {
+        let local = Self::load_layers(path, None, overrides)?;
+        let mut all = config_overlay::env_overrides(ENV_PREFIX);
+        all.extend(overrides.iter().cloned());
+        let locked = remote::locked_keys(&all);
+        let file = remote::path(&local.state_dir());
+        let doc = match remote::read(&file) {
+            None => {
+                return Ok(LoadedConfig {
+                    cfg: local,
+                    remote: RemoteStatus::none(),
+                    locked,
+                });
+            }
+            Some(doc) => doc,
+        };
+        let rev = doc.as_ref().ok().map(|d| d.rev);
+        let merged = doc.and_then(|d| {
+            remote::check_allowed(&d.values)?;
+            let cfg = Self::load_layers(path, Some(&d.values), overrides)?;
+            Ok((cfg, d))
+        });
+        match merged {
+            Ok((cfg, doc)) => Ok(LoadedConfig {
+                cfg,
+                remote: RemoteStatus {
+                    rev: Some(doc.rev),
+                    state: "applied",
+                    error: None,
+                    values: doc.values,
+                },
+                locked,
+            }),
+            Err(e) => {
+                remote::set_aside(&file);
+                Ok(LoadedConfig {
+                    cfg: local,
+                    remote: RemoteStatus {
+                        rev,
+                        state: "rejected",
+                        error: Some(format!("{e:#}")),
+                        ..RemoteStatus::none()
+                    },
+                    locked,
+                })
+            }
+        }
+    }
+
+    /// Check a remote set against this station's local layers (what
+    /// [`StationConfig::load_full`] would make of it).
+    pub fn check_remote(
+        path: Option<&Path>,
+        values: &Value,
+        overrides: &[String],
+    ) -> Result<StationConfig> {
+        remote::check_allowed(values)?;
+        Self::load_layers(path, Some(values), overrides)
+    }
+
+    fn load_layers(
+        path: Option<&Path>,
+        remote: Option<&Value>,
+        overrides: &[String],
+    ) -> Result<StationConfig> {
         let defaults = serde_json::to_value(StationConfig::default())?;
         let mut value = defaults.clone();
         if let Some(path) = path {
             let file = config_overlay::file_to_value(path)?;
             check_keys(&defaults, &file, "")?;
             merge(&mut value, file);
+        }
+        if let Some(remote) = remote {
+            check_keys(&defaults, remote, "").context("remote config")?;
+            merge(&mut value, remote.clone());
         }
         let mut all = config_overlay::env_overrides(ENV_PREFIX);
         all.extend(overrides.iter().cloned());
@@ -379,6 +471,15 @@ impl StationConfig {
         if self.capture.stall_timeout_s <= 0.0 || self.mqtt.live_max_hz <= 0.0 {
             bail!("capture.stall_timeout_s and mqtt.live_max_hz must be positive");
         }
+        if self.capture.lowres > MAX_LOWRES {
+            bail!(
+                "capture.lowres must be 0-{MAX_LOWRES}, got {}",
+                self.capture.lowres
+            );
+        }
+        if self.capture.scale_width == 0 || self.capture.scale_height == 0 {
+            bail!("capture.scale_width and capture.scale_height must be positive");
+        }
         let url = &self.host.url;
         if !(url.is_empty() || url.starts_with("http://") || url.starts_with("https://")) {
             bail!("host.url must start with http:// (e.g. http://192.168.1.10:7990), got {url:?}");
@@ -411,6 +512,13 @@ impl StationConfig {
             fps: (c.fps > 0.0).then_some(c.fps),
             width: c.scale_width,
             height: c.scale_height,
+            lowres: c.lowres,
+        };
+        // A `file:` source (tests, benchmarks) is decoded like the device.
+        sup.file = FileOptions {
+            fps: None,
+            scale: Some((c.scale_width, c.scale_height)),
+            lowres: c.lowres,
         };
         sup.stall_timeout = Duration::from_secs_f64(c.stall_timeout_s);
         sup.backoff_max = Duration::from_secs_f64(c.backoff_max_s.max(1.0));
@@ -633,6 +741,82 @@ mod tests {
         assert_eq!(cfg.capture_input(), url);
         cfg.capture.device = "rtsp://127.0.0.1:8554/nes".into();
         assert_eq!(cfg.capture_input(), "rtsp://127.0.0.1:8554/nes");
+    }
+
+    fn remote_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join("nestris-station-config-tests")
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn base_sets(dir: &Path) -> Vec<String> {
+        vec![
+            "mqtt.host=broker".into(),
+            format!("station.state_dir={}", dir.display()),
+        ]
+    }
+
+    #[test]
+    fn remote_layer_sits_between_file_and_overrides() {
+        let file = write_temp(
+            "remote-layers.toml",
+            "[capture]\ndevice = \"/dev/video0\"\nfps = 60\nscale_width = 720\n[rfid]\nenabled = false\n",
+        );
+        let dir = remote_dir("layers");
+        let doc = remote::RemoteDoc {
+            rev: 7,
+            values: serde_json::json!({"capture": {"fps": 50, "scale_width": 480, "lowres": 1}}),
+        };
+        remote::write(&remote::path(&dir), &doc).unwrap();
+        let mut sets = base_sets(&dir);
+        sets.push("capture.scale_width=360".into());
+        let loaded = StationConfig::load_full(Some(&file), &sets).unwrap();
+        assert_eq!(loaded.remote.state, "applied");
+        assert_eq!(loaded.remote.rev, Some(7));
+        assert_eq!(loaded.cfg.capture.fps, 50.0); // remote over file
+        assert_eq!(loaded.cfg.capture.lowres, 1);
+        assert_eq!(loaded.cfg.capture.scale_width, 360); // --set over remote
+        assert!(loaded.locked.contains(&"capture.scale_width".to_string()));
+        // Without the remote layer the file wins.
+        assert_eq!(
+            StationConfig::load(Some(&file), &sets).unwrap().capture.fps,
+            60.0
+        );
+    }
+
+    #[test]
+    fn invalid_remote_is_set_aside() {
+        let file = write_temp("remote-invalid.toml", MINIMAL);
+        let dir = remote_dir("invalid");
+        let doc = remote::RemoteDoc {
+            rev: 2,
+            values: serde_json::json!({"capture": {"lowres": 9}}),
+        };
+        remote::write(&remote::path(&dir), &doc).unwrap();
+        let loaded = StationConfig::load_full(Some(&file), &base_sets(&dir)).unwrap();
+        assert_eq!(loaded.remote.state, "rejected");
+        assert_eq!(loaded.remote.rev, Some(2));
+        assert!(loaded.remote.error.unwrap().contains("lowres"));
+        assert_eq!(loaded.cfg.capture.lowres, 0);
+        assert!(remote::read(&remote::path(&dir)).is_none());
+    }
+
+    #[test]
+    fn remote_check_rejects_locked_and_unknown_keys() {
+        let file = write_temp("remote-check.toml", MINIMAL);
+        let dir = remote_dir("check");
+        let sets = base_sets(&dir);
+        let ok = serde_json::json!({"session": {"min_game_frames": 200}});
+        let cfg = StationConfig::check_remote(Some(&file), &ok, &sets).unwrap();
+        assert_eq!(cfg.session.min_game_frames, 200);
+        let host = serde_json::json!({"mqtt": {"host": "elsewhere"}});
+        assert!(StationConfig::check_remote(Some(&file), &host, &sets).is_err());
+        let typo = serde_json::json!({"capture": {"scale_widht": 480}});
+        let err = StationConfig::check_remote(Some(&file), &typo, &sets).unwrap_err();
+        assert!(format!("{err:#}").contains("scale_widht"), "{err:#}");
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! Native CLI frontend: `run` (process a source to JSONL/WebSocket), `bench`
-//! (per-frame latency), `verify` (full-pipeline diff against the Python
-//! oracle's stage dumps — the Phase-5 gate), and `list-devices`.
+//! (per-frame latency), `compare` (field agreement of two runs), `verify`
+//! (full-pipeline diff against the Python oracle's stage dumps — the
+//! Phase-5 gate), and `list-devices`.
 
+mod compare;
 mod config_load;
 mod screens;
 mod verify;
@@ -12,11 +14,12 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use nestris_engine::config::EngineConfig;
 use nestris_engine::processor::FrameProcessor;
-use nestris_host::capture_ffmpeg::{self, VideoDecoder};
+use nestris_host::capture_ffmpeg;
 use nestris_host::recalib_thread::RecalibThread;
 use nestris_host::recording::{self, RecordingSink};
 use nestris_host::sinks::{JsonlSink, MultiSink, Sink, WebSocketSink};
 use nestris_ngf::recorder::{GameRecorder, RecorderConfig};
+use screens::DecodeArgs;
 
 #[derive(Parser)]
 #[command(name = "nestris", about = "NES-Tetris OCR engine (Rust port)")]
@@ -76,10 +79,8 @@ enum Cmd {
         /// Also record games already in progress when capture starts.
         #[arg(long)]
         record_partial: bool,
-        /// Real frame rate of a file muxed with a wrong one (e.g. `50` for a
-        /// 50 fps capture stored as 25 fps); timestamps and --start use it.
-        #[arg(long)]
-        fps: Option<f64>,
+        #[command(flatten)]
+        decode: DecodeArgs,
     },
     /// Replay a recorded .ngf / .ngf.gz game as schema-v4 output frames.
     Replay {
@@ -114,12 +115,32 @@ enum Cmd {
         /// unlocked (the "does the preview stutter" number).
         #[arg(long, default_value_t = 0)]
         acquire: u64,
-        /// Real frame rate of a file muxed with a wrong one.
-        #[arg(long)]
-        fps: Option<f64>,
+        #[command(flatten)]
+        decode: DecodeArgs,
         /// Engine config overrides (`path=value`, repeatable).
         #[arg(long = "set", value_name = "PATH=VALUE")]
         set: Vec<String>,
+        /// Print the result as one JSON object.
+        #[arg(long)]
+        json: bool,
+        /// Only decode (no engine): the maximum rate ffmpeg delivers.
+        #[arg(long)]
+        decode_only: bool,
+    },
+    /// Per-field agreement of two `run --jsonl` outputs of the same source
+    /// (e.g. downscaled against native).
+    Compare {
+        /// Reference run.
+        #[arg(long)]
+        a: PathBuf,
+        /// Run to check.
+        #[arg(long)]
+        b: PathBuf,
+        /// Frames a value may lag or lead and still agree.
+        #[arg(long, default_value_t = compare::DEFAULT_SLACK)]
+        slack: usize,
+        #[arg(long)]
+        json: bool,
     },
     /// Screen-signature tools: build references, evaluate, dump frames.
     Screens {
@@ -187,7 +208,7 @@ fn main() -> Result<()> {
             record_dir,
             record_raw,
             record_partial,
-            fps,
+            decode,
         } => run(RunArgs {
             input,
             jsonl,
@@ -203,7 +224,7 @@ fn main() -> Result<()> {
             record_dir,
             record_raw,
             record_partial,
-            fps,
+            decode,
         }),
         Cmd::Replay {
             file,
@@ -218,15 +239,32 @@ fn main() -> Result<()> {
             frames,
             warmup,
             acquire,
-            fps,
+            decode,
             set,
+            json,
+            decode_only,
         } => {
             if acquire > 0 {
-                bench_acquire(&input, start, frames, acquire)
+                bench_acquire(&input, start, frames, acquire, &decode)
             } else {
                 let cfg = config_load::load(None, None, &set)?;
-                bench(&input, start, frames, warmup, fps, cfg)
+                let opts = BenchOptions {
+                    frames,
+                    warmup,
+                    json,
+                    decode_only,
+                };
+                bench(&input, start, &decode, cfg, &opts)
             }
+        }
+        Cmd::Compare { a, b, slack, json } => {
+            let result = compare::compare(&a, &b, slack)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                compare::print(&result);
+            }
+            Ok(())
         }
         Cmd::Screens { cmd } => screens::run(cmd),
         Cmd::Verify {
@@ -263,7 +301,7 @@ struct RunArgs {
     record_dir: Option<PathBuf>,
     record_raw: bool,
     record_partial: bool,
-    fps: Option<f64>,
+    decode: DecodeArgs,
 }
 
 fn run(args: RunArgs) -> Result<()> {
@@ -274,7 +312,7 @@ fn run(args: RunArgs) -> Result<()> {
         args.oracle_parity,
     )?;
     let background = cfg.calibration.background_recalibration;
-    let mut decoder = screens::open(&args.input, args.start, args.fps)?;
+    let mut decoder = screens::open(&args.input, args.start, &args.decode)?;
     let mut processor = FrameProcessor::new(cfg);
 
     let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
@@ -382,26 +420,61 @@ fn replay(
     Ok(())
 }
 
+struct BenchOptions {
+    frames: u64,
+    warmup: u64,
+    json: bool,
+    decode_only: bool,
+}
+
+/// The `q` quantile (0..=1) of an ascending sample.
+fn percentile(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    sorted[((sorted.len() - 1) as f64 * q).round() as usize]
+}
+
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
 fn bench(
     input: &str,
     start: f64,
-    frames: u64,
-    warmup: u64,
-    fps: Option<f64>,
+    decode: &DecodeArgs,
     cfg: EngineConfig,
+    opts: &BenchOptions,
 ) -> Result<()> {
-    let mut decoder = screens::open(input, start, fps)?;
+    let mut decoder = screens::open(input, start, decode)?;
+    let (width, height) = (decoder.info().width, decoder.info().height);
     let mut processor = FrameProcessor::new(cfg);
     let mut times_ms: Vec<f64> = Vec::new();
+    // Time spent waiting for the next frame on the pipe: ffmpeg decodes in
+    // its own process, so this is what decoding costs the loop.
+    let mut wait_ms: Vec<f64> = Vec::new();
     let mut fills: Vec<usize> = Vec::new();
     let mut locked_at: Option<u64> = None;
     let mut i = 0u64;
     // Bench measures the hot path the way production runs it: the solve is
     // on the worker thread, only snapshot/offer costs land in the loop.
     let mut recalib = RecalibThread::start();
-    while let Some(frame) = decoder.next_frame()? {
-        if i >= frames {
+    let mut timed_since: Option<std::time::Instant> = None;
+    while i < opts.frames {
+        if i == opts.warmup {
+            timed_since = Some(std::time::Instant::now());
+        }
+        let t_read = std::time::Instant::now();
+        let Some(frame) = decoder.next_frame()? else {
             break;
+        };
+        let read_ms = t_read.elapsed().as_secs_f64() * 1000.0;
+        if opts.decode_only {
+            if i >= opts.warmup {
+                wait_ms.push(read_ms);
+            }
+            i += 1;
+            continue;
         }
         let t0 = std::time::Instant::now();
         let output = processor.process(&frame);
@@ -412,8 +485,9 @@ fn bench(
         {
             locked_at = Some(i);
         }
-        if i >= warmup {
+        if i >= opts.warmup {
             times_ms.push(dt);
+            wait_ms.push(read_ms);
         }
         fills.push(
             output
@@ -424,30 +498,76 @@ fn bench(
         );
         i += 1;
     }
-    if times_ms.is_empty() {
+    let timed = wait_ms.len();
+    if timed == 0 {
         eprintln!("no frames timed");
         return Ok(());
     }
-    times_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let pct = |q: f64| times_ms[((times_ms.len() - 1) as f64 * q) as usize];
+    let wall_s = timed_since.map_or(0.0, |t| t.elapsed().as_secs_f64());
+    let wall_fps = timed as f64 / wall_s.max(1e-9);
+    times_ms.sort_by(|a, b| a.total_cmp(b));
+    wait_ms.sort_by(|a, b| a.total_cmp(b));
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+    let fill_mean =
+        (!fills.is_empty()).then(|| fills.iter().sum::<usize>() as f64 / fills.len() as f64);
+    if opts.json {
+        let engine = (!times_ms.is_empty()).then(|| {
+            serde_json::json!({
+                "p50": round2(percentile(&times_ms, 0.50)),
+                "p90": round2(percentile(&times_ms, 0.90)),
+                "p95": round2(percentile(&times_ms, 0.95)),
+                "p99": round2(percentile(&times_ms, 0.99)),
+                "max": round2(*times_ms.last().unwrap()),
+                "mean": round2(mean(&times_ms)),
+            })
+        });
+        let report = serde_json::json!({
+            "input": input,
+            "start": start,
+            "size": format!("{width}x{height}"),
+            "scale": decode.scale.map(|(w, h)| format!("{w}x{h}")),
+            "lowres": decode.lowres,
+            "decode_only": opts.decode_only,
+            "timed_frames": timed,
+            "wall_fps": round2(wall_fps),
+            "engine_ms": engine,
+            "wait_ms": {
+                "p50": round2(percentile(&wait_ms, 0.50)),
+                "p95": round2(percentile(&wait_ms, 0.95)),
+                "mean": round2(mean(&wait_ms)),
+            },
+            "lock_frame": locked_at,
+            "playfield_fill_mean": fill_mean.map(round2),
+        });
+        println!("{report}");
+        return Ok(());
+    }
     println!(
-        "{input} @ {start:.1}s: {} timed frames, lock at {:?}",
-        times_ms.len(),
-        locked_at
+        "{input} @ {start:.1}s ({width}x{height}): {timed} timed frames, lock at {locked_at:?}"
     );
+    if !times_ms.is_empty() {
+        println!(
+            "engine ms/frame: p50={:.2} p90={:.2} p99={:.2} max={:.2}  (p50 fps={:.1})",
+            percentile(&times_ms, 0.50),
+            percentile(&times_ms, 0.90),
+            percentile(&times_ms, 0.99),
+            times_ms.last().unwrap(),
+            1000.0 / percentile(&times_ms, 0.50).max(1e-9)
+        );
+    }
     println!(
-        "ms/frame: p50={:.2} p90={:.2} p99={:.2} max={:.2}  (p50 fps={:.1})",
-        pct(0.50),
-        pct(0.90),
-        pct(0.99),
-        times_ms.last().unwrap(),
-        1000.0 / pct(0.50)
+        "frame wait ms: p50={:.2} p95={:.2} mean={:.2}  wall fps={:.1}",
+        percentile(&wait_ms, 0.50),
+        percentile(&wait_ms, 0.95),
+        mean(&wait_ms),
+        wall_fps
     );
-    println!(
-        "playfield fill: mean={:.1} max={}",
-        fills.iter().sum::<usize>() as f64 / fills.len() as f64,
-        fills.iter().max().unwrap()
-    );
+    if let Some(fill) = fill_mean {
+        println!(
+            "playfield fill: mean={fill:.1} max={}",
+            fills.iter().max().unwrap()
+        );
+    }
     Ok(())
 }
 
@@ -455,11 +575,17 @@ fn bench(
 /// (background solver + 640-wide candidate detection). Reports wall time to
 /// `Locked` and the per-frame pipeline latency while unlocked — the number
 /// that decides whether a live preview stutters during acquisition.
-fn bench_acquire(input: &str, start: f64, max_frames: u64, runs: u64) -> Result<()> {
+fn bench_acquire(
+    input: &str,
+    start: f64,
+    max_frames: u64,
+    runs: u64,
+    decode: &DecodeArgs,
+) -> Result<()> {
     let mut lock_times_s: Vec<f64> = Vec::new();
     let mut unlocked_ms: Vec<f64> = Vec::new();
     for run in 0..runs {
-        let mut decoder = VideoDecoder::open(input, start)?;
+        let mut decoder = screens::open(input, start, decode)?;
         // Pace file input at source fps like a live device: time-to-lock is
         // wall-clock bound (background solves run while frames flow), so an
         // unpaced file would starve the solver of wall time.

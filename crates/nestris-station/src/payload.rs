@@ -7,6 +7,7 @@ use nestris_engine::output::LineClears;
 use serde::Serialize;
 
 use crate::rfid::Player;
+use crate::telemetry::Perf;
 
 /// Version of the `event/game_end` payload layout.
 pub const GAME_END_SCHEMA: u32 = 1;
@@ -38,8 +39,12 @@ pub struct Status {
     pub reader_fw: Option<String>,
     pub reader_serial: Option<String>,
     pub game_id: Option<String>,
+    /// Processed frames per second (also `perf.fps`).
     pub fps: f64,
     pub dropped_frames: u64,
+    /// Pipeline performance of the last window (since 0.3.0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub perf: Option<Perf>,
     pub uptime_s: u64,
     pub ts: String,
 }
@@ -84,7 +89,46 @@ pub struct Live {
     /// active play (menus, pause: the console hides the board while paused)
     /// or with `mqtt.live_playfield = false`.
     pub playfield: Option<Vec<String>>,
+    /// Running number of this message (since 0.3.0); a gap means `live`
+    /// messages were lost on the way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+    /// Time from reading the frame off the capture to this message, in ms.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_age_ms: Option<f64>,
     pub ts: String,
+}
+
+/// `<base>/config` (retained): the remote configuration (`remote.rs`).
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct ConfigReport {
+    pub station: String,
+    pub version: &'static str,
+    /// Revision of the remote set in effect, pending or rejected.
+    pub rev: Option<u64>,
+    /// `none`, `applied`, `pending` (after the running game), `restarting`,
+    /// `rejected`.
+    pub state: &'static str,
+    pub error: Option<String>,
+    /// The remote set in effect.
+    pub values: serde_json::Value,
+    /// The configuration the station runs with (secrets masked).
+    pub effective: serde_json::Value,
+    /// Keys pinned by the environment or `--set` (remote values lose).
+    pub locked: Vec<String>,
+    /// Remote-settable keys (exact, or prefixes ending in `.`).
+    pub allowed: &'static [&'static str],
+    /// Answer to `list_devices`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub devices: Option<Devices>,
+    pub ts: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+pub struct Devices {
+    pub capture: Vec<crate::remote::CaptureDevice>,
+    /// Serial ports for `rfid.port`.
+    pub serial: Vec<String>,
 }
 
 /// `<base>/event/game_start`.

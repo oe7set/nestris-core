@@ -123,6 +123,28 @@ NESTRIS_STATION__MQTT__PASSWORD=geheim     # Passwort nie in station.toml
 Das Schema ist `NESTRIS_STATION__<SEKTION>__<SCHLÜSSEL>`. Das gilt für jeden
 Wert, auch für `NESTRIS_STATION__MQTT__HOST`.
 
+### Konfiguration aus NestrisLTM (ab Station 0.3.0)
+
+Sobald die Station mit dem Broker verbunden ist, lassen sich fast alle
+Werte bequem in NestrisLTM ändern: *Stationen & Geräte → Konfiguration*.
+Dort gibt es eine **Vorlage für alle Stationen** und pro Station eigene
+Werte. Nach dem Speichern übernimmt die Station die Werte und startet ihre
+Erkennung neu (läuft gerade ein Spiel, erst danach). Die Werte liegen auf
+der Station in `/var/lib/nestris-station/remote.json`.
+
+Lokal in `station.toml` bzw. `env` bleiben dann nur noch: `station.id`,
+`mqtt.host`, Passwörter/Token und eventuell `rfid.port`. Alles, was in der
+`env`-Datei oder per `--set` steht, gewinnt immer und erscheint in NestrisLTM
+als „gesperrt“ (z. B. `station.name`, wenn es in der env-Datei steht).
+Nie aus der Ferne änderbar sind Station-ID, Broker, Host-URL/Token, Pfade und
+Updates. Eine falsche Einstellung kann die Station also nicht vom Host
+abschneiden.
+
+Leistung prüfen: *Stationen & Geräte → Leistung* zeigt pro Station Kamera-
+und Erkennungs-FPS, verworfene Bilder, Engine-Zeit, CPU und wie viele
+Live-Nachrichten bei NestrisLTM ankommen. Direkt auf der Station misst
+`nestris-station bench` dasselbe ohne Broker (siehe `docs/DOWNSCALE.md`).
+
 ### Wie findet die Station den Broker?
 
 Nur über `mqtt.host` (IP oder DNS-Name). Die Station sucht nicht selbst im

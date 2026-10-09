@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 
 use nestris_engine::frame::Frame;
 
-use crate::capture_ffmpeg::{self, DecoderKiller, InputKind, LiveOptions, VideoDecoder};
+use crate::capture_ffmpeg::{
+    self, DecoderKiller, FileOptions, InputKind, LiveOptions, VideoDecoder,
+};
 
 /// Frames buffered between the capture thread and the consumer.
 const FRAME_QUEUE: usize = 4;
@@ -32,6 +34,10 @@ pub struct SupervisorConfig {
     /// ffmpeg input (`v4l2:/dev/...`, `dshow:...`, or a file for testing).
     pub input: String,
     pub live: LiveOptions,
+    /// Decoding options for a file input.
+    pub file: FileOptions,
+    /// A file input starts here (seconds; a looped file restarts at 0).
+    pub file_start: f64,
     /// No frame for this long counts as a stall and restarts ffmpeg.
     pub stall_timeout: Duration,
     pub backoff_min: Duration,
@@ -40,6 +46,9 @@ pub struct SupervisorConfig {
     pub pace_files: bool,
     /// Restart after a file ends (loop it) instead of reporting `Ended`.
     pub loop_files: bool,
+    /// Paced files drop frames like a live source when the consumer falls
+    /// behind (benchmarks); otherwise file frames are never dropped.
+    pub drop_paced_files: bool,
 }
 
 impl SupervisorConfig {
@@ -47,11 +56,14 @@ impl SupervisorConfig {
         Self {
             input: input.into(),
             live: LiveOptions::default(),
+            file: FileOptions::default(),
+            file_start: 0.0,
             stall_timeout: Duration::from_secs(5),
             backoff_min: Duration::from_secs(1),
             backoff_max: Duration::from_secs(30),
             pace_files: false,
             loop_files: false,
+            drop_paced_files: false,
         }
     }
 }
@@ -72,8 +84,40 @@ pub enum CaptureStatus {
 }
 
 pub enum CaptureMsg {
-    Frame(Frame),
+    /// A frame and when it was read from ffmpeg (queue latency).
+    Frame(Frame, Instant),
     Status(CaptureStatus),
+}
+
+/// Frame counters since the supervisor started.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaptureStats {
+    /// Frames read from ffmpeg.
+    pub delivered: u64,
+    /// Frames dropped because the consumer fell behind.
+    pub dropped: u64,
+    /// Frames the source should have delivered but did not (gaps in the
+    /// live frame clock: drops inside the device, driver or ffmpeg).
+    pub missing: u64,
+}
+
+#[derive(Default)]
+struct Counters {
+    delivered: AtomicU64,
+    dropped: AtomicU64,
+    missing: AtomicU64,
+}
+
+/// A gap this many frame periods long counts as missing frames (USB
+/// capture timing jitters by a fraction of a period).
+const GAP_PERIODS: f64 = 1.5;
+
+/// Frames missing in a gap of `gap_s` seconds at `fps`.
+pub fn missing_in_gap(gap_s: f64, fps: f64) -> u64 {
+    if fps <= 0.0 || gap_s * fps < GAP_PERIODS {
+        return 0;
+    }
+    ((gap_s * fps).round() as u64).saturating_sub(1)
 }
 
 /// Result of [`CaptureSupervisor::recv`].
@@ -89,7 +133,7 @@ pub struct CaptureSupervisor {
     rx: Receiver<CaptureMsg>,
     stop: Arc<AtomicBool>,
     killer: Arc<Mutex<Option<DecoderKiller>>>,
-    dropped: Arc<AtomicU64>,
+    counters: Arc<Counters>,
     handles: Vec<JoinHandle<()>>,
 }
 
@@ -98,7 +142,7 @@ impl CaptureSupervisor {
         let (tx, rx) = sync_channel(FRAME_QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
         let killer: Arc<Mutex<Option<DecoderKiller>>> = Arc::default();
-        let dropped = Arc::new(AtomicU64::new(0));
+        let counters = Arc::new(Counters::default());
         // Milliseconds since `epoch` of the last frame (stall detection).
         let epoch = Instant::now();
         let last_frame_ms = Arc::new(AtomicU64::new(0));
@@ -136,7 +180,7 @@ impl CaptureSupervisor {
                 tx,
                 stop: stop.clone(),
                 killer: killer.clone(),
-                dropped: dropped.clone(),
+                counters: counters.clone(),
                 epoch,
                 last_frame_ms,
                 reading,
@@ -148,7 +192,7 @@ impl CaptureSupervisor {
             rx,
             stop,
             killer,
-            dropped,
+            counters,
             handles,
         }
     }
@@ -164,7 +208,15 @@ impl CaptureSupervisor {
 
     /// Frames dropped because the consumer fell behind.
     pub fn dropped_frames(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
+        self.counters.dropped.load(Ordering::Relaxed)
+    }
+
+    pub fn stats(&self) -> CaptureStats {
+        CaptureStats {
+            delivered: self.counters.delivered.load(Ordering::Relaxed),
+            dropped: self.counters.dropped.load(Ordering::Relaxed),
+            missing: self.counters.missing.load(Ordering::Relaxed),
+        }
     }
 
     /// Force a reconnect (e.g. the consumer judged the picture dead).
@@ -209,7 +261,7 @@ struct Worker {
     tx: SyncSender<CaptureMsg>,
     stop: Arc<AtomicBool>,
     killer: Arc<Mutex<Option<DecoderKiller>>>,
-    dropped: Arc<AtomicU64>,
+    counters: Arc<Counters>,
     epoch: Instant,
     last_frame_ms: Arc<AtomicU64>,
     reading: Arc<AtomicBool>,
@@ -248,7 +300,17 @@ impl Worker {
                 return;
             }
             let started = Instant::now();
-            let end = match VideoDecoder::open_with(&self.cfg.input, 0.0, &self.cfg.live) {
+            let opened = if kind.is_live() {
+                VideoDecoder::open_with(&self.cfg.input, 0.0, &self.cfg.live)
+            } else {
+                let start = if first_session {
+                    self.cfg.file_start
+                } else {
+                    0.0
+                };
+                VideoDecoder::open_file(&self.cfg.input, start, &self.cfg.file)
+            };
+            let end = match opened {
                 Ok(decoder) => {
                     let end = self.session(decoder, !first_session, &mut last_status);
                     first_session = false;
@@ -328,6 +390,8 @@ impl Worker {
         self.touch();
         self.reading.store(true, Ordering::Relaxed);
         let paced_start = Instant::now();
+        let droppable = live || (self.cfg.pace_files && self.cfg.drop_paced_files);
+        let mut last_ts: Option<f64> = None;
         let mut first = true;
         let end = loop {
             if self.stop.load(Ordering::Relaxed) {
@@ -348,6 +412,7 @@ impl Worker {
                 Err(e) => break SessionEnd::Failed(stderr_reason(&decoder, &format!("{e}"))),
             };
             self.touch();
+            self.counters.delivered.fetch_add(1, Ordering::Relaxed);
             if first {
                 first = false;
                 if !self.status(last_status, CaptureStatus::Running { width, height }) {
@@ -361,18 +426,25 @@ impl Worker {
                     std::thread::sleep(wait);
                 }
             }
+            // After pacing: a paced file frame is "read" when it is due.
+            let read_at = Instant::now();
             // Monotonic across restarts: the engine's clocks never run back.
             frame.seq = self.seq;
             self.seq += 1;
             if live {
                 frame.ts = self.epoch.elapsed().as_secs_f64();
+                if let Some(prev) = last_ts {
+                    let missing = missing_in_gap(frame.ts - prev, fps);
+                    self.counters.missing.fetch_add(missing, Ordering::Relaxed);
+                }
+                last_ts = Some(frame.ts);
             }
-            match self.tx.try_send(CaptureMsg::Frame(frame)) {
+            match self.tx.try_send(CaptureMsg::Frame(frame, read_at)) {
                 Ok(()) => {}
-                Err(TrySendError::Full(CaptureMsg::Frame(frame))) => {
-                    if live {
-                        self.dropped.fetch_add(1, Ordering::Relaxed);
-                    } else if self.tx.send(CaptureMsg::Frame(frame)).is_err() {
+                Err(TrySendError::Full(CaptureMsg::Frame(frame, read_at))) => {
+                    if droppable {
+                        self.counters.dropped.fetch_add(1, Ordering::Relaxed);
+                    } else if self.tx.send(CaptureMsg::Frame(frame, read_at)).is_err() {
                         // Files are never dropped: block instead.
                         break SessionEnd::Quit;
                     }
@@ -412,6 +484,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gaps_count_missing_frames() {
+        assert_eq!(missing_in_gap(0.02, 50.0), 0);
+        // Jitter below 1.5 periods is not a drop.
+        assert_eq!(missing_in_gap(0.029, 50.0), 0);
+        assert_eq!(missing_in_gap(0.04, 50.0), 1);
+        assert_eq!(missing_in_gap(0.1, 50.0), 4);
+        assert_eq!(missing_in_gap(1.0, 0.0), 0);
+    }
+
+    #[test]
     fn missing_v4l2_device_waits_instead_of_failing() {
         let mut cfg = SupervisorConfig::new("v4l2:/nonexistent/nestris-test-video");
         cfg.backoff_min = Duration::from_millis(10);
@@ -437,7 +519,7 @@ mod tests {
         loop {
             match sup.recv(Duration::from_secs(10)) {
                 Recv::Msg(CaptureMsg::Status(s)) => statuses.push(s),
-                Recv::Msg(CaptureMsg::Frame(_)) => panic!("no frames expected"),
+                Recv::Msg(CaptureMsg::Frame(..)) => panic!("no frames expected"),
                 Recv::Timeout | Recv::Closed => break,
             }
         }
