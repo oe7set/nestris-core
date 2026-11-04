@@ -73,7 +73,6 @@ Popup {
         { path: "engine.plausibility.confirm_frames", label: "Self-heal after frames", type: "i" },
         { section: "RECOGNITION" },
         { path: "engine.recognition.score_base", label: "Score base", type: "e", options: ["auto", "dec", "hex"] },
-        { path: "engine.recognition.score_base_latch_frames", label: "Base latch frames", type: "i" },
         { path: "engine.recognition.read_statistics", label: "Read STATISTICS rail", type: "b" },
         { path: "engine.recognition.statistics_every_n", label: "STATISTICS every N frames", type: "i" },
         { path: "engine.recognition.read_current_piece", label: "Track current piece", type: "b" },

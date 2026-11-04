@@ -15,7 +15,7 @@ use crate::output::{
 use crate::palette::to_luma;
 use crate::recognition::clear_anim::ClearAnimationDetector;
 use crate::recognition::current_piece::CurrentPieceReader;
-use crate::recognition::digits::{BaseMode, DigitReader, ScoreBaseLatch};
+use crate::recognition::digits::{BaseMode, DigitReader};
 use crate::recognition::next_piece::NextPieceReader;
 use crate::recognition::playfield::{ColorTuning, Grid, PlayfieldReader};
 use crate::recognition::stabilizer::PlayfieldStabilizer;
@@ -24,6 +24,10 @@ use crate::state::fusion::{FusedState, FusionEngine, RawReading};
 use crate::state::plausibility::{PlausibilityFilter, PlausibilityInput, PlausibilityResult};
 use crate::state::screen::ScreenClassifier;
 use crate::stats::StatsEngine;
+
+/// `score_base = "auto"` accepts a letter in the top SCORE digit from here on
+/// (999 999 rolls to `A00000`): below it a letter can only be a misread 0 or 8.
+const TOP_LETTER_MIN_SCORE: i64 = 900_000;
 
 fn is_gameplay(state: GameState) -> bool {
     matches!(state, GameState::InGame | GameState::Paused)
@@ -48,7 +52,6 @@ pub struct FrameProcessor {
     layout: &'static LayoutTable,
     classifier: ScreenClassifier,
     digits: DigitReader,
-    score_latch: Option<ScoreBaseLatch>,
     statistics: StatisticsReader,
     current: CurrentPieceReader,
     clear_anim: ClearAnimationDetector,
@@ -58,6 +61,7 @@ pub struct FrameProcessor {
     plausibility: Option<PlausibilityFilter>,
     lock: CalibrationLock,
     last_lock_state: LockState,
+    last_score: Option<i64>,
     last_level: Option<i64>,
     last_lines: Option<i64>,
     /// Palette hint for the frames right after a level-crossing clear
@@ -82,18 +86,10 @@ pub struct FrameProcessor {
 impl FrameProcessor {
     pub fn new(config: EngineConfig) -> Self {
         let base = match config.recognition.score_base.as_str() {
-            "dec" => BaseMode::Dec,
+            "auto" => BaseMode::Auto,
             "hex" => BaseMode::Hex,
-            _ => BaseMode::Auto,
+            _ => BaseMode::Dec,
         };
-        let score_latch =
-            if base == BaseMode::Auto && config.recognition.score_base_latch_frames > 0 {
-                Some(ScoreBaseLatch::new(
-                    config.recognition.score_base_latch_frames,
-                ))
-            } else {
-                None
-            };
         let plausibility = if config.plausibility.enabled {
             Some(PlausibilityFilter::new(config.plausibility.clone()))
         } else {
@@ -103,7 +99,6 @@ impl FrameProcessor {
             layout: get_layout(),
             classifier: ScreenClassifier::with_config(config.screen.clone()),
             digits: DigitReader::new(base),
-            score_latch,
             statistics: StatisticsReader::new(),
             current: CurrentPieceReader::new(),
             clear_anim: ClearAnimationDetector::new(),
@@ -116,6 +111,7 @@ impl FrameProcessor {
                 config.tracking.clone(),
             ),
             last_lock_state: LockState::Unlocked,
+            last_score: None,
             last_level: None,
             last_lines: None,
             level_hint: None,
@@ -171,9 +167,7 @@ impl FrameProcessor {
         self.current.reset();
         self.clear_anim.reset();
         self.stabilizer.reset();
-        if let Some(latch) = &mut self.score_latch {
-            latch.reset();
-        }
+        self.last_score = None;
         self.last_level = None;
         self.last_lines = None;
         self.level_hint = None;
@@ -270,6 +264,9 @@ impl FrameProcessor {
             fused.lines = p.lines;
             fused.level = p.level;
         }
+        if fused.score.is_some() {
+            self.last_score = fused.score;
+        }
         if fused.level.is_some() {
             self.last_level = fused.level;
             // A caught-up fused level supersedes the transition hint.
@@ -331,6 +328,7 @@ impl FrameProcessor {
         self.current.reset();
         self.clear_anim.reset();
         self.stabilizer.reset();
+        self.last_score = None;
         self.last_level = None;
         self.last_lines = None;
         self.level_hint = None;
@@ -389,15 +387,16 @@ impl FrameProcessor {
         }
         let layout = self.layout;
 
-        let score = match &mut self.score_latch {
-            Some(latch) => {
-                self.digits
-                    .read_field_latched(latch, gray, &layout.score, layout.score_digits)
+        let score_base = match self.digits.default_base {
+            BaseMode::Auto if self.last_score.is_some_and(|s| s >= TOP_LETTER_MIN_SCORE) => {
+                BaseMode::Hex
             }
-            None => self
-                .digits
-                .read_field(gray, &layout.score, layout.score_digits, None),
+            BaseMode::Auto => BaseMode::Dec,
+            base => base,
         };
+        let score =
+            self.digits
+                .read_field(gray, &layout.score, layout.score_digits, Some(score_base));
         let lines = self.digits.read_field(
             gray,
             &layout.lines,

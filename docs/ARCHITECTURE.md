@@ -95,8 +95,9 @@ synchronous entry point. For each BGR frame:
 
 4. **Recognition** (`recognition/`) — only on gameplay frames:
    - `digits.rs` — SCORE/LINES/LEVEL by normalized-correlation template
-     matching of 8×8 digit glyphs, with ±2 px re-centering and an
-     auto/dec/hex score-base latch for modded ROMs.
+     matching of 8×8 digit glyphs, with ±2 px re-centering. Values are
+     always decimal; modded ROMs may show `A`-`F` in the top SCORE digit
+     (`recognition.score_base`, default `dec`).
    - `next_piece.rs` — the NEXT box is Otsu-binarized, cleaned, cropped to
      the piece bounding box, resampled onto a grid sized to the piece, and
      classified by rotation-tolerant footprint matching. Template-free and

@@ -83,6 +83,9 @@ pub struct Live {
     pub pps: Option<f64>,
     pub pieces: i64,
     pub cheated: u32,
+    /// The score has been above the most the lines so far allow for a while:
+    /// the reading is wrong (since 0.3.1).
+    pub score_suspect: bool,
     pub confidence: f64,
     /// The stack, top row first: 20 strings of 10 cell ids (`0` empty,
     /// `1` white, `2`/`3` the level's two accent colors). `null` outside

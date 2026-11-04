@@ -40,7 +40,7 @@ export function defaultConfig(): EngineConfigJson {
       confirm_frames: 6,
     },
     recognition: {
-      score_base: "auto",
+      score_base: "dec",
       score_base_latch_frames: 60,
       read_statistics: true,
       statistics_every_n: 6,
@@ -111,7 +111,6 @@ const SCHEMA: { group: string; fields: FieldDef[] }[] = [
     group: "Recognition",
     fields: [
       { path: "recognition.score_base", label: "Score base", kind: "select", options: ["auto", "dec", "hex"] },
-      { path: "recognition.score_base_latch_frames", label: "Base latch frames", kind: "number", step: 10 },
       { path: "recognition.read_statistics", label: "Read STATISTICS rail", kind: "bool" },
       { path: "recognition.statistics_every_n", label: "STATISTICS every N frames", kind: "number", step: 1 },
       { path: "recognition.read_current_piece", label: "Track current piece", kind: "bool" },

@@ -229,12 +229,17 @@ current `nestris-rfid-reader` firmware), `disabled`. `reader_fw` /
 {"game_id":"station-1-1790241008228","player":{"uid":"A1B2C3D4","name":"Erv"},
  "game_state":"in_game","score":22800,"lines":4,"level":18,"next_piece":"I",
  "tetris_rate":1.0,"burn":0,"drought":3,"max_drought":9,"pps":0.9876,"pieces":12,
- "cheated":0,"confidence":0.95,
+ "cheated":0,"score_suspect":false,"confidence":0.95,
  "playfield":["0000000000","0000000000","...","0000000110","2221103311"],
  "seq":18822,"frame_age_ms":7.4,"ts":"..."}
 ```
 
 `game_id` is `null` between games (menus still update `game_state`).
+
+`score_suspect` (since 0.3.1) is `true` while the score has been above what
+the lines so far allow for over 2 seconds: every four lines a tetris at the
+current level + 1, plus the push-down budget and detected cheats. The reading
+is wrong then; the station also logs it once per game.
 
 `seq` (since 0.3.0) counts the `live` messages since the station started:
 a gap at the receiver means messages were lost (QoS 0), a lower value means

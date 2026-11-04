@@ -4,6 +4,17 @@ The section of a version is the text of its GitHub release
 (`.github/scripts/release_notes.py`). NestrisLTM reads the station packages
 of a release (`nestris-station_<version>-1_<arch>.deb`) for station updates.
 
+## 0.3.1
+
+- **Fixed wrong scores**: a station could switch to reading SCORE as a
+  base-16 number (one unreadable frame or 60 frames were enough) and stayed
+  there across games until it restarted, so 025782 was reported as 153474.
+  Values are now always decimal and the base latch is gone.
+- `recognition.score_base` defaults to `dec`. `hex` allows `A`-`F` in the top
+  digit only, `auto` does so from 900 000 points on.
+  `score_base_latch_frames` still loads but has no effect.
+- `score_suspect` in `live`: the score is above what the lines allow.
+
 ## 0.3.0
 
 - **Station remote configuration**: NestrisLTM sets the station config

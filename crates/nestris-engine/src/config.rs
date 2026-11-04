@@ -106,8 +106,10 @@ impl Default for PlausibilityConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecognitionConfig {
-    /// `"dec"`, `"hex"`, or `"auto"`.
+    /// `"dec"` (digits only, the vanilla ROM), `"hex"` (a modded ROM's top
+    /// digit may be `A`-`F`) or `"auto"` (`"hex"` from 900 000 points on).
     pub score_base: String,
+    /// No effect (the base latch is gone); kept so existing configs still load.
     pub score_base_latch_frames: u32,
     pub read_statistics: bool,
     pub statistics_every_n: u32,
@@ -140,7 +142,7 @@ pub struct RecognitionConfig {
 impl Default for RecognitionConfig {
     fn default() -> Self {
         Self {
-            score_base: "auto".into(),
+            score_base: "dec".into(),
             score_base_latch_frames: 60,
             read_statistics: true,
             statistics_every_n: 6,
@@ -267,5 +269,15 @@ impl EngineConfig {
     /// faster background solves. Everything else stays at defaults.
     pub fn apply_handheld_preset(&mut self) {
         self.tracking.enabled = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_score_is_decimal_by_default() {
+        assert_eq!(EngineConfig::default().recognition.score_base, "dec");
     }
 }

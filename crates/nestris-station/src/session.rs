@@ -19,13 +19,16 @@ use chrono::{DateTime, Utc};
 use nestris_engine::enums::GameState;
 use nestris_engine::integrity::IntegrityConfig;
 use nestris_engine::integrity::cheat::{CheatDetector, IntegrityEvent};
-use nestris_engine::integrity::validate::{GameValidator, Severity};
+use nestris_engine::integrity::validate::{GameValidator, Severity, score_limit};
 use nestris_engine::output::{Fields, GameStats, OutputFrame};
 use nestris_engine::state::plausibility::infer_start_level;
 use tracing::{info, warn};
 
 /// Discarded false starts up to this length are not logged.
 const SHORT_FALSE_START_FRAMES: u64 = 10;
+/// Frames above the score limit before `score_suspect` is raised. Longer than
+/// the 90 frames a cheat stays provisional, so a real cheat never raises it.
+const SUSPECT_FRAMES: u32 = 120;
 
 use crate::config::SessionSection;
 use crate::payload::{self, Cheat, GameEnd, GameStart, Live, Validation};
@@ -73,6 +76,46 @@ struct Active {
     lost_since: Option<f64>,
     /// Cheat detections made before the game was announced.
     early_cheats: Vec<IntegrityEvent>,
+    /// First score and lines read, the base of the score limit.
+    first_values: (Option<i64>, Option<i64>),
+    /// Consecutive in-game frames above the score limit.
+    over_limit: u32,
+    suspect_logged: bool,
+}
+
+impl Active {
+    /// Compare the score with the most the lines so far allow.
+    fn check_score_limit(&mut self, cfg: &IntegrityConfig) {
+        let f = &self.last_fields;
+        self.first_values.0 = self.first_values.0.or(f.score);
+        self.first_values.1 = self.first_values.1.or(f.lines);
+        let (Some(score), Some(lines), Some(level), Some(score0), Some(lines0)) = (
+            f.score,
+            f.lines,
+            f.level,
+            self.first_values.0,
+            self.first_values.1,
+        ) else {
+            return;
+        };
+        let limit = score_limit(
+            cfg,
+            lines - lines0,
+            level,
+            self.last_stats.pieces,
+            self.detector.cheated(),
+        );
+        if score - score0 <= limit {
+            self.over_limit = 0;
+            return;
+        }
+        self.over_limit = self.over_limit.saturating_add(1);
+        if self.over_limit >= SUSPECT_FRAMES && !self.suspect_logged {
+            self.suspect_logged = true;
+            warn!(game_id = %self.game_id, score, lines, level, limit,
+                  "score above what the lines allow");
+        }
+    }
 }
 
 pub struct SessionTracker {
@@ -150,6 +193,7 @@ impl SessionTracker {
                 a.last_fields.lines = f.lines.or(a.last_fields.lines);
                 a.last_fields.level = f.level.or(a.last_fields.level);
                 a.last_stats = out.stats.clone();
+                a.check_score_limit(&self.integrity);
                 if a.start_level.is_none()
                     && let Some(level) = out.fields.level
                 {
@@ -264,6 +308,7 @@ impl SessionTracker {
             pps: s.pps.map(round4),
             pieces: s.pieces,
             cheated: game.map_or(0, |a| a.detector.cheated()),
+            score_suspect: game.is_some_and(|a| a.over_limit >= SUSPECT_FRAMES),
             confidence: round4(out.confidence.overall),
             playfield: if with_playfield && out.game_state == GameState::InGame {
                 out.fields.playfield.as_deref().map(playfield_rows)
@@ -293,6 +338,9 @@ impl SessionTracker {
             saw_game_over: false,
             lost_since: None,
             early_cheats: Vec::new(),
+            first_values: (None, None),
+            over_limit: 0,
+            suspect_logged: false,
         });
     }
 
@@ -529,6 +577,45 @@ mod tests {
         assert_eq!(end.player.as_ref().unwrap().uid, "ABCD");
         assert!(end.game_id.starts_with("st1-"));
         assert!(r.t.game_id().is_none());
+    }
+
+    #[test]
+    fn an_impossible_score_is_suspect_in_the_live_view() {
+        let mut r = Run {
+            t: tracker(),
+            seq: 0,
+            events: Vec::new(),
+        };
+        let rfid = RfidSnapshot::default();
+        let suspect = |r: &Run, score, lines| {
+            let f = frame(r.seq, GameState::InGame, score, lines, false);
+            r.t.live(&f, &rfid, false).score_suspect
+        };
+        r.feed(GameState::InGame, 0, 0, 200, &rfid);
+        assert!(!suspect(&r, 0, 0));
+        // Legal: two tetrises on level 18.
+        r.feed(GameState::InGame, 45_600, 8, 200, &rfid);
+        assert!(!suspect(&r, 45_600, 8));
+        // A wrong reading only counts once it held.
+        r.feed(GameState::InGame, 900_000, 8, 60, &rfid);
+        assert!(!suspect(&r, 900_000, 8));
+        r.feed(GameState::InGame, 900_000, 8, 120, &rfid);
+        assert!(suspect(&r, 900_000, 8));
+    }
+
+    /// A real cheat is explained by the detector before the limit fires.
+    #[test]
+    fn a_cheat_is_not_suspect() {
+        let mut r = Run {
+            t: tracker(),
+            seq: 0,
+            events: Vec::new(),
+        };
+        let rfid = RfidSnapshot::default();
+        r.feed(GameState::InGame, 0, 0, 200, &rfid);
+        r.feed(GameState::InGame, 10_000, 0, 300, &rfid);
+        let f = frame(r.seq, GameState::InGame, 10_000, 0, false);
+        assert!(!r.t.live(&f, &rfid, false).score_suspect);
     }
 
     #[test]

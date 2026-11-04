@@ -1,4 +1,9 @@
 //! Numeric field recognition (port of `recognition/digits.py`).
+//!
+//! Every field is decimal arithmetic. A NES score is BCD: only the top digit of
+//! a modded ROM can show `A`-`F` (its value 10-15), so `A00000` is 1 000 000 and
+//! the lower five digits stay decimal. Reading the whole field as base 16 turned
+//! 025782 into 153 474, and latching the base kept that for every later game.
 
 use nestris_vision::Image;
 
@@ -19,11 +24,15 @@ fn digit_value(label: &str) -> i64 {
     i64::from_str_radix(label, 16).expect("digit label")
 }
 
-/// Numeric base mode for a field read.
+/// Which glyphs a SCORE read accepts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BaseMode {
+    /// Digits only (vanilla ROM).
     Dec,
+    /// `A`-`F` allowed in the top digit.
     Hex,
+    /// `Hex` once the score can reach the top digit's letters, else `Dec`
+    /// (decided by the caller, which knows the held score).
     Auto,
 }
 
@@ -34,76 +43,15 @@ pub struct DigitReading {
     pub confidence: f32,
     /// Per-cell (label, score) diagnostics.
     pub digits: Vec<(Option<&'static str>, f32)>,
-    pub base: u32,
 }
 
 impl DigitReading {
-    fn unreadable(base: u32, digits: Vec<(Option<&'static str>, f32)>) -> Self {
+    fn unreadable(digits: Vec<(Option<&'static str>, f32)>) -> Self {
         DigitReading {
             value: None,
             confidence: 0.0,
             digits,
-            base,
         }
-    }
-}
-
-/// Latches the SCORE base after consistent auto reads (ROM property).
-pub struct ScoreBaseLatch {
-    latch_frames: u32,
-    latched: Option<BaseMode>,
-    streak_base: Option<u32>,
-    streak: u32,
-}
-
-impl ScoreBaseLatch {
-    pub fn new(latch_frames: u32) -> Self {
-        Self {
-            latch_frames,
-            latched: None,
-            streak_base: None,
-            streak: 0,
-        }
-    }
-
-    pub fn base(&self) -> Option<BaseMode> {
-        self.latched
-    }
-
-    pub fn reset(&mut self) {
-        self.latched = None;
-        self.streak_base = None;
-        self.streak = 0;
-    }
-
-    pub fn observe(&mut self, reading: &DigitReading) {
-        if self.latch_frames == 0 {
-            return;
-        }
-        if reading.value.is_none() {
-            self.streak_base = None;
-            self.streak = 0;
-            return;
-        }
-        if Some(reading.base) == self.streak_base {
-            self.streak += 1;
-        } else {
-            self.streak_base = Some(reading.base);
-            self.streak = 1;
-        }
-        if self.streak >= self.latch_frames {
-            self.latched = Some(if self.streak_base == Some(10) {
-                BaseMode::Dec
-            } else {
-                BaseMode::Hex
-            });
-        }
-    }
-
-    pub fn relatch(&mut self, base: BaseMode) {
-        self.latched = Some(base);
-        self.streak_base = Some(if base == BaseMode::Dec { 10 } else { 16 });
-        self.streak = self.latch_frames;
     }
 }
 
@@ -125,52 +73,8 @@ impl DigitReader {
         digit_count: usize,
         base: Option<BaseMode>,
     ) -> DigitReading {
-        let tset = digit_templates();
-        match base.unwrap_or(self.default_base) {
-            BaseMode::Auto => {
-                let dec = read_base(gray, field, digit_count, tset, 10, &DEC_LABELS);
-                let hexr = read_base(gray, field, digit_count, tset, 16, &HEX_LABELS);
-                if hexr.value.is_some()
-                    && (dec.value.is_none() || hexr.confidence > dec.confidence + 1e-6)
-                {
-                    hexr
-                } else {
-                    dec
-                }
-            }
-            BaseMode::Hex => read_base(gray, field, digit_count, tset, 16, &HEX_LABELS),
-            BaseMode::Dec => read_base(gray, field, digit_count, tset, 10, &DEC_LABELS),
-        }
-    }
-
-    /// Auto-base read steered by a [`ScoreBaseLatch`].
-    pub fn read_field_latched(
-        &self,
-        latch: &mut ScoreBaseLatch,
-        gray: &Image,
-        field: &Rect,
-        digit_count: usize,
-    ) -> DigitReading {
-        if let Some(latched) = latch.base() {
-            let reading = self.read_field(gray, field, digit_count, Some(latched));
-            if reading.value.is_some() {
-                return reading;
-            }
-            let other = if latched == BaseMode::Dec {
-                BaseMode::Hex
-            } else {
-                BaseMode::Dec
-            };
-            let alt = self.read_field(gray, field, digit_count, Some(other));
-            if alt.value.is_some() {
-                latch.relatch(other);
-                return alt;
-            }
-            return reading;
-        }
-        let reading = self.read_field(gray, field, digit_count, Some(BaseMode::Auto));
-        latch.observe(&reading);
-        reading
+        let top_letters = base.unwrap_or(self.default_base) == BaseMode::Hex;
+        read_digits(gray, field, digit_count, digit_templates(), top_letters)
     }
 }
 
@@ -182,13 +86,13 @@ fn crop_gray(gray: &Image, x0: usize, y0: usize, x1: usize, y1: usize) -> Vec<u8
     out
 }
 
-fn read_base(
+/// `top_letters`: the first cell may show `A`-`F`; every other cell is 0-9.
+fn read_digits(
     gray: &Image,
     field: &Rect,
     digit_count: usize,
     tset: &TemplateSet,
-    base: u32,
-    allowed: &[&str],
+    top_letters: bool,
 ) -> DigitReading {
     let dw = field.w / digit_count as f64;
     let mut per_digit: Vec<(Option<&'static str>, f32)> = Vec::with_capacity(digit_count);
@@ -211,31 +115,35 @@ fn read_base(
             continue;
         }
 
+        let allowed: &[&str] = if i == 0 && top_letters {
+            &HEX_LABELS
+        } else {
+            &DEC_LABELS
+        };
         let result = match_recentered(gray, &cell, tset, allowed);
         per_digit.push((result.label, result.score));
         let acceptable = result.label.map(|l| allowed.contains(&l)).unwrap_or(false)
             && result.score >= MIN_DIGIT_SCORE
             && result.margin >= MIN_MARGIN;
         if acceptable {
-            value = value * base as i64 + digit_value(result.label.unwrap());
+            value = value * 10 + digit_value(result.label.unwrap());
             scores.push(result.score);
             any_digit = true;
         } else {
-            return DigitReading::unreadable(base, per_digit);
+            return DigitReading::unreadable(per_digit);
         }
     }
 
     if !any_digit {
         // All cells blank -> unreadable, NOT zero (vanilla ROM renders
         // leading zeros; no ink means occlusion/blanking).
-        return DigitReading::unreadable(base, per_digit);
+        return DigitReading::unreadable(per_digit);
     }
     let confidence = scores.iter().sum::<f32>() / scores.len() as f32;
     DigitReading {
         value: Some(value),
         confidence,
         digits: per_digit,
-        base,
     }
 }
 
@@ -277,4 +185,65 @@ fn match_recentered(
     }
     let refs: Vec<&[u8]> = patches.iter().map(|p| p.as_slice()).collect();
     tset.match_best_of_gray(&refs, Some(allowed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::get_layout;
+    use crate::templates::digit_glyph;
+
+    /// A black 256x240 luma frame showing `text` in the SCORE field.
+    fn frame_with_score(text: &str) -> Image {
+        let mut gray = Image::new(256, 240, 1);
+        let field = get_layout().score;
+        for (i, c) in text.chars().enumerate() {
+            let glyph = digit_glyph(&c.to_string());
+            let (x0, y0) = (field.x as usize + i * 8, field.y as usize);
+            for y in 0..glyph.height {
+                for x in 0..glyph.width {
+                    gray.data[(y0 + y) * gray.width + x0 + x] = glyph.data[y * glyph.width + x];
+                }
+            }
+        }
+        gray
+    }
+
+    fn read(text: &str, base: BaseMode) -> Option<i64> {
+        let layout = get_layout();
+        DigitReader::new(base)
+            .read_field(&frame_with_score(text), &layout.score, 6, None)
+            .value
+    }
+
+    #[test]
+    fn plain_digits_are_decimal_in_every_mode() {
+        for base in [BaseMode::Dec, BaseMode::Hex, BaseMode::Auto] {
+            assert_eq!(read("025782", base), Some(25_782), "{base:?}");
+        }
+    }
+
+    /// 025799 -> 025800 is one point, not the +103 of a base-16 reading.
+    #[test]
+    fn a_step_across_a_carry_is_one_point() {
+        let (a, b) = (read("025799", BaseMode::Hex), read("025800", BaseMode::Hex));
+        assert_eq!(b.unwrap() - a.unwrap(), 1);
+    }
+
+    #[test]
+    fn a_top_letter_counts_as_its_digit_value() {
+        assert_eq!(read("A00000", BaseMode::Hex), Some(1_000_000));
+        assert_eq!(read("B23456", BaseMode::Hex), Some(1_123_456));
+        assert_eq!(read("F99999", BaseMode::Hex), Some(1_599_999));
+    }
+
+    #[test]
+    fn dec_never_reads_a_letter() {
+        assert_ne!(read("A00000", BaseMode::Dec), Some(1_000_000));
+    }
+
+    #[test]
+    fn letters_below_the_top_digit_are_never_read() {
+        assert_ne!(read("1B3456", BaseMode::Hex), Some(0x1B_3456));
+    }
 }

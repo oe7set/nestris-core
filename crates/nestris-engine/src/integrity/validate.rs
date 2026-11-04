@@ -61,6 +61,24 @@ pub struct ValidationReport {
     pub metrics: ValidationMetrics,
 }
 
+/// The most a game can have scored in `lines` lines: every four lines a tetris
+/// at the current level (the highest so far) plus one for a misread level, the
+/// push-down budget and the detected cheats. A live sanity bound, so a wrong
+/// score shows during the game and not only in the end report.
+pub fn score_limit(
+    cfg: &IntegrityConfig,
+    lines: i64,
+    level: i64,
+    pieces: i64,
+    cheated: u32,
+) -> i64 {
+    let tetrises = (lines.max(0) + 3) / 4;
+    tetrises * 1_200 * (level.max(0) + 2)
+        + pieces.max(0) * cfg.softdrop_per_piece
+        + i64::from(cheated) * cfg.cheat_points
+        + cfg.reconcile_tolerance
+}
+
 /// Accumulates one game's output frames; see the module docs.
 pub struct GameValidator {
     cfg: IntegrityConfig,
@@ -449,6 +467,35 @@ mod tests {
         assert!(r.valid, "{:?}", r.issues);
         assert!(r.issues.is_empty(), "{:?}", r.issues);
         assert_eq!(r.metrics.clear_points, 45_600);
+    }
+
+    /// The score of station-3: the screen's 025782 read as 0x25782.
+    #[test]
+    fn a_score_read_as_hex_fails_the_reconciliation() {
+        let mut g = Game::new();
+        g.feed(GameState::InGame, 0, 0, 5, 60);
+        g.feed(GameState::InGame, 153_474, 22, 5, 60);
+        let clears = LineClears {
+            double: 1,
+            tetris: 5,
+            ..Default::default()
+        };
+        let r = g.report(clears, 74);
+        assert!(!r.valid, "{:?}", r.issues);
+        assert!(codes(&r).contains(&"score_reconcile"), "{:?}", r.issues);
+    }
+
+    #[test]
+    fn score_limit_separates_the_live_readings() {
+        let cfg = IntegrityConfig::default();
+        // Station 3: 22 lines on level 5.
+        let limit = score_limit(&cfg, 22, 5, 74, 0);
+        assert!((25_782..153_474).contains(&limit), "{limit}");
+        // Station 4: 140 lines on level 14.
+        let limit = score_limit(&cfg, 140, 14, 355, 0);
+        assert!((156_141..1_401_153).contains(&limit), "{limit}");
+        // All tetrises on level 18 stay legal.
+        assert!(score_limit(&cfg, 8, 18, 20, 0) >= 45_600);
     }
 
     #[test]

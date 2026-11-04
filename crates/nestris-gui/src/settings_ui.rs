@@ -128,11 +128,6 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut GuiS
                             ui.selectable_value(&mut e.recognition.score_base, base.into(), base);
                         }
                     });
-                drag_u32(
-                    ui,
-                    &mut e.recognition.score_base_latch_frames,
-                    "Base latch frames",
-                );
                 ui.checkbox(&mut e.recognition.read_statistics, "Read STATISTICS rail");
                 drag_u32(
                     ui,

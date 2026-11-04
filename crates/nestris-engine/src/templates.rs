@@ -233,6 +233,13 @@ impl TemplateSet {
 }
 
 /// The digit template set (0-9 A-F, 8×8).
+/// The raw glyph of a digit label, for drawing test frames.
+#[cfg(test)]
+pub(crate) fn digit_glyph(label: &str) -> Image {
+    let (_, png) = DIGIT_PNGS.iter().find(|(l, _)| *l == label).expect("label");
+    decode_png(png)
+}
+
 pub fn digit_templates() -> &'static TemplateSet {
     static SET: OnceLock<TemplateSet> = OnceLock::new();
     SET.get_or_init(|| TemplateSet::from_pngs(DIGIT_PNGS))

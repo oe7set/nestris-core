@@ -174,8 +174,8 @@ level_tolerance = 1                # allowed |level - expected_from_lines|
 confirm_frames = 6                 # persistent rejected value self-heals after
 
 [recognition]
-score_base = "auto"                # "auto" | "dec" | "hex" (modded ROMs)
-score_base_latch_frames = 60       # auto-base latches after N agreeing frames
+score_base = "dec"                 # "dec" | "hex" (top digit may be A-F, modded ROMs)
+                                   # | "auto" ("hex" from 900 000 points on)
 read_statistics = true
 statistics_every_n = 6             # STATISTICS rail read cadence
 read_current_piece = true

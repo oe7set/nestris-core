@@ -136,4 +136,5 @@ level = "info"
 # docs/USAGE.md). The station already defaults to background acquisition and
 # downscaled candidate detection; only override what you need, e.g.:
 # [engine.recognition]
-# score_base = "dec"
+# score_base = "auto"   # default "dec"; only for a modded ROM that shows A-F in
+#                       # the top SCORE digit above 999 999
