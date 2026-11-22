@@ -179,7 +179,8 @@ host must deduplicate by `game_id` (+ topic).
 {"state":"online","station":"station-1","name":"Station 1","version":"0.2.0",
  "capture":"ok","capture_detail":"1280x720","lock":"locked","game_state":"in_game",
  "rfid":"ok","reader_fw":"1.0.0","reader_serial":"A4CF12B3C4D5",
- "game_id":"station-1-1790241008228","fps":50.0,"dropped_frames":0,
+ "game_id":"station-1-1790241008228","demo":null,"demos_skipped":3,
+ "last_demo_at":"2026-09-24T09:02:11.104Z","fps":50.0,"dropped_frames":0,
  "perf":{"capture_fps":50.0,"fps":50.0,"target_fps":50.0,"drop_rate":0.0,
          "missing":0,"dropped_total":0,"missing_total":3,
          "engine_ms_p50":6.1,"engine_ms_p95":11.8,"frame_age_ms_p95":13.2,
@@ -212,7 +213,12 @@ engine input size (lower `capture.scale_*` or set `capture.lowres`).
 (`capture_detail` has ffmpeg's error and the retry delay). `rfid`: `ok`,
 `offline`, `outdated` (a reader answers but with another protocol: flash the
 current `nestris-rfid-reader` firmware), `disabled`. `reader_fw` /
-`reader_serial` identify the connected reader (`null` without one). On a clean shutdown and as the broker's last will:
+`reader_serial` identify the connected reader (`null` without one).
+`demo` (since 0.4.0) is `checking` while a game from the title screen is
+compared with the known attract-mode demos, `demo` while the demo plays, else
+`null`; `demos_skipped` counts the demos dropped since the station started and
+`last_demo_at` is when the last one ended (see [Demo detection](#demo-detection)).
+On a clean shutdown and as the broker's last will:
 `{"state":"offline","station":"station-1","ts":...}`.
 
 ### `player`
@@ -231,10 +237,16 @@ current `nestris-rfid-reader` firmware), `disabled`. `reader_fw` /
  "tetris_rate":1.0,"burn":0,"drought":3,"max_drought":9,"pps":0.9876,"pieces":12,
  "cheated":0,"score_suspect":false,"confidence":0.95,
  "playfield":["0000000000","0000000000","...","0000000110","2221103311"],
- "seq":18822,"frame_age_ms":7.4,"ts":"..."}
+ "demo":null,"seq":18822,"frame_age_ms":7.4,"ts":"..."}
 ```
 
 `game_id` is `null` between games (menus still update `game_state`).
+
+`demo` (since 0.4.0): `checking` while a game from the title screen is
+compared with the attract-mode demos, `demo` while the demo plays, else
+`null`. While it is set no game is announced (`game_id` is `null`); with
+`demo` the `player` is `null` too. Score, board and pieces keep updating, so a
+host may show the demo, but must not treat it as a game.
 
 `score_suspect` (since 0.3.1) is `true` while the score has been above what
 the lines so far allow for over 2 seconds: every four lines a tetris at the
@@ -476,6 +488,65 @@ and `k` is counted as cheat inputs. The detector (sans-io, in
 Tuning (`[integrity]`): `cheat_points` (10000), `cheat_slack` (250),
 `confirm_frames` (10), `pair_window_frames` (30), `softdrop_slack` (200),
 `anomaly_threshold` (2000).
+
+## Demo detection
+
+Left on the title screen, NES Tetris plays an attract-mode **demo**. It looks
+exactly like a game (board, SCORE, LINES), so without this check every demo
+would be recorded as a game. The demo is deterministic — a fixed RNG seed and
+recorded inputs — so every run shows the same SCORE/LINES after each piece and
+the same NEXT pieces. The station compares each game against those
+fingerprints (`nestris-engine/src/integrity/demo.rs`) and **drops a demo
+entirely**: no `game_start`, no `game_end`, no recording on disk, no upload.
+It logs `attract-mode demo skipped` and counts it in `status.demos_skipped`.
+
+Two independent signals must agree, and every doubt makes the game real:
+
+1. **Entry.** A real game always starts through the type and level select
+   menus. A game entered through them is real at once and announced as
+   before, without any delay. Only a game entered straight from the title
+   screen (the demo's way), or with no menu seen at all (the station started
+   mid-game), is a candidate. Backing out of the menus to the title screen
+   (10 title frames) forgets them again.
+2. **Fingerprint.** While a candidate runs, nothing is announced. Every
+   SCORE/LINES value that holds `confirm_frames` (4) frames must be the next
+   step of a known demo (up to `max_skip` steps may be missed by the OCR; a
+   pair where only one counter moved yet is tolerated), the LEVEL must match,
+   and a NEXT piece that holds `next_confirm_frames` (30) frames must be one
+   the demo shows around that step. Unreadable frames are ignored.
+
+- **Demo**: `min_match_steps` (6) steps matched from the title screen, or
+  `min_match_steps_unknown_entry` (10) without a known entry — about 9 s and
+  17 s into the demo.
+- **Aborted demo** (Start pressed, reset, power-off) before that: from the
+  title screen, with nothing contradicting the fingerprint and at least one
+  matched step or NEXT piece, it is a demo too. With an unknown entry it is
+  a normal game (fail-safe).
+- **Real**: any stable contradiction, running past the end of the demo, or
+  no verdict after `max_pending_frames` (60 s). The game is then announced
+  with its **original** game id and start time, and the cheats detected so
+  far follow — nothing of it is lost.
+
+The built-in fingerprint `nes-ntsc-event` was learnt from four demos the
+stations recorded with the event ROM (`testdata/demo/`). For another ROM,
+record its demo two or more times (or export the demo games from NestrisLTM)
+and learn it:
+
+```sh
+nestris demo learn a.ngf.gz b.ngf.gz c.ngf.gz --id nes-pal --rom "NES Tetris PAL" --out nes-pal.json
+nestris demo check a.ngf.gz --cut 5 --cut 20       # verdict, also for aborted demos
+sudo install -m 644 nes-pal.json /etc/nestris-station/demo/
+sudo systemctl restart nestris-station
+```
+
+Every `*.json` in `/etc/nestris-station/demo/` is loaded at start (one
+fingerprint or an array; the same `id` replaces a built-in one).
+
+Tuning (`[session.demo]`, remote-settable): `enabled` (true; `false` treats
+every game as real), `min_match_steps` (6), `min_match_steps_unknown_entry`
+(10), `confirm_frames` (4), `next_confirm_frames` (30), `max_skip` (2),
+`max_pending_frames` (3600), `keep_recordings` (false; keeps the 20 newest
+demo recordings in `<state_dir>/demo` for diagnosis instead of deleting them).
 
 ## Validation
 

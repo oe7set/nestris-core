@@ -312,6 +312,38 @@ Station jede gespeicherte Aufnahme nach Spielende hoch:
    `recording uploaded`. Ist der Host nicht erreichbar, warten die Aufträge in
    `/var/lib/nestris-station/uploads` und gehen später raus.
 
+## 10a. Demo-Spiele (ab Station 0.4.0)
+
+Bleibt der Titelbildschirm stehen, spielt NES-Tetris ein **Demo-Spiel**. Die
+Station erkennt es und verwirft es ganz: kein `game_start`, kein `game_end`,
+keine Aufnahme, kein Upload. Im Log steht dann
+`attract-mode demo skipped`, im NestrisLTM-Dashboard steht bei der Station
+„Demo-Spiel“ statt „im Spiel“. Wird die Demo vorzeitig abgebrochen (Start
+gedrückt), wird sie ebenfalls nicht gespeichert.
+
+Echte Spiele sind davon nicht betroffen: Ein Spiel, das über die Typ- und
+Level-Auswahl gestartet wurde, ist immer echt und wird sofort gemeldet. Nur
+ein Spiel direkt vom Titelbildschirm (so startet die Demo) wird mit dem
+bekannten Demo-Ablauf verglichen. Weicht es ab, wird es ganz normal als Spiel
+gemeldet, mit der ursprünglichen Startzeit.
+
+**Andere ROM, andere Demo:** Die eingebaute Erkennung kennt die Demo der
+Event-ROM. Für eine andere ROM die Demo zwei- bis dreimal aufnehmen (oder die
+Demo-Spiele in NestrisLTM als `.ngf.gz` herunterladen) und am PC einlernen:
+
+```sh
+nestris demo learn demo1.ngf.gz demo2.ngf.gz demo3.ngf.gz --id nes-andere-rom --rom "Beschreibung" --out nes-andere-rom.json
+nestris demo check demo1.ngf.gz --cut 5 --cut 20
+```
+
+Die Datei nach `/etc/nestris-station/demo/` kopieren und den Dienst neu
+starten (`sudo systemctl restart nestris-station`). Im Log steht beim Start
+`attract-mode demo detection … fingerprints=2`.
+
+Notschalter: In `station.toml` (oder in NestrisLTM unter
+*Stationskonfiguration*) `session.demo.enabled = false` setzen. Dann zählt
+wieder jedes Spiel.
+
 ## 11. Was man noch bedenken sollte
 
 **Vor dem Event**

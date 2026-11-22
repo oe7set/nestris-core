@@ -12,6 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use nestris_engine::config::EngineConfig;
 use nestris_engine::integrity::IntegrityConfig;
+use nestris_engine::integrity::demo::DemoConfig;
 use nestris_host::capture_ffmpeg::{FileOptions, LiveOptions, MAX_LOWRES};
 use nestris_host::capture_supervisor::SupervisorConfig;
 use nestris_host::config_overlay;
@@ -245,6 +246,8 @@ pub struct SessionSection {
     pub min_game_frames: u64,
     /// A game is closed after this long without a usable picture.
     pub signal_lost_end_s: f64,
+    /// Attract-mode demo detection (`[session.demo]`).
+    pub demo: DemoConfig,
 }
 
 impl Default for SessionSection {
@@ -253,6 +256,7 @@ impl Default for SessionSection {
             end_confirm_frames: 30,
             min_game_frames: 120,
             signal_lost_end_s: 30.0,
+            demo: DemoConfig::default(),
         }
     }
 }

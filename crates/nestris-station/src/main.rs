@@ -38,7 +38,7 @@ use nestris_host::capture_supervisor::{
 };
 use nestris_host::recalib_thread::RecalibThread;
 use nestris_host::recording::RecordingSink;
-use nestris_ngf::recorder::{GameRecorder, RecorderConfig};
+use nestris_ngf::recorder::{GameRecorder, RecorderConfig, RecorderEvent};
 use tracing::{error, info, warn};
 
 use crate::config::{DEFAULT_CONFIG, LoadedConfig, StationConfig};
@@ -406,6 +406,57 @@ fn run(
     result
 }
 
+/// Extra demo fingerprints for other ROMs (`nestris demo learn` output).
+const DEMO_FINGERPRINT_DIR: &str = "/etc/nestris-station/demo";
+/// Demo recordings kept with `session.demo.keep_recordings`.
+const DEMO_RECORDINGS_KEPT: usize = 20;
+
+/// The built-in demo fingerprints plus every `*.json` in `dir`.
+fn demo_fingerprints(dir: &Path) -> Vec<nestris_engine::integrity::demo::Fingerprint> {
+    use nestris_engine::integrity::demo::{builtin_fingerprints, parse_fingerprints};
+    let mut fps = builtin_fingerprints();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return fps;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    paths.sort();
+    for path in paths {
+        match std::fs::read_to_string(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|t| parse_fingerprints(&t).map_err(anyhow::Error::from))
+        {
+            Ok(more) => {
+                info!(path = %path.display(), count = more.len(), "demo fingerprints loaded");
+                for fp in more {
+                    fps.retain(|f| f.id != fp.id);
+                    fps.push(fp);
+                }
+            }
+            Err(e) => warn!(path = %path.display(), error = %format!("{e:#}"),
+                            "ignoring a broken demo fingerprint file"),
+        }
+    }
+    fps
+}
+
+/// Keep the `keep` newest files in `dir`.
+fn prune_newest(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
+    for (_, path) in files.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 struct Station {
     cfg: StationConfig,
     mqtt: Option<MqttLink>,
@@ -417,7 +468,12 @@ struct Station {
     uploader: Option<Uploader>,
     /// Game id of the session game that belongs to the running recording.
     recording_game: Option<String>,
+    /// The running (or just finished) recording shows an attract-mode demo.
+    recording_demo: bool,
     last_game: Option<String>,
+    /// Attract-mode demos skipped since the start, and when the last ended.
+    demos_skipped: u64,
+    last_demo_at: Option<String>,
     started: Instant,
     capture: &'static str,
     capture_detail: Option<String>,
@@ -503,12 +559,19 @@ impl Station {
         } else {
             (None, None)
         };
-        let session = SessionTracker::new(
+        let mut session = SessionTracker::new(
             cfg.session.clone(),
             cfg.integrity.clone(),
             cfg.station.id.clone(),
             Duration::from_secs_f64(cfg.rfid.player_grace_s.max(0.0)),
         );
+        let fingerprints = demo_fingerprints(Path::new(DEMO_FINGERPRINT_DIR));
+        info!(
+            enabled = cfg.session.demo.enabled,
+            fingerprints = fingerprints.len(),
+            "attract-mode demo detection"
+        );
+        session.set_fingerprints(fingerprints);
         let live_interval = Duration::from_secs_f64(1.0 / cfg.mqtt.live_max_hz);
         let telemetry = Telemetry::new((cfg.capture.fps > 0.0).then_some(cfg.capture.fps));
         Ok(Station {
@@ -520,7 +583,10 @@ impl Station {
             uploads,
             uploader,
             recording_game: None,
+            recording_demo: false,
             last_game: None,
+            demos_skipped: 0,
+            last_demo_at: None,
             started: Instant::now(),
             capture: "opening",
             capture_detail: None,
@@ -881,6 +947,14 @@ impl Station {
         let mut saved = Vec::new();
         if let Some((recorder, sink)) = &mut self.recording {
             let events = recorder.push(out);
+            if events
+                .iter()
+                .any(|e| matches!(e, RecorderEvent::GameStarted { .. }))
+            {
+                // A new recording belongs to no session game yet.
+                self.recording_game = None;
+                self.recording_demo = false;
+            }
             match sink.handle(recorder, events) {
                 Ok(paths) => saved = paths,
                 Err(e) => warn!(error = %format!("{e:#}"), "recording failed"),
@@ -920,17 +994,67 @@ impl Station {
     /// Remember which session game the running recording belongs to.
     fn note_games(&mut self, events: &[SessionEvent]) {
         for event in events {
-            if let SessionEvent::Start(start) = event {
-                self.last_game = Some(start.game_id.clone());
-                let recording = self.recording.as_ref().is_some_and(|(r, _)| r.recording());
-                if recording {
-                    self.recording_game = Some(start.game_id.clone());
+            match event {
+                SessionEvent::Start(start) => {
+                    self.last_game = Some(start.game_id.clone());
+                    let recording = self.recording.as_ref().is_some_and(|(r, _)| r.recording());
+                    if recording {
+                        self.recording_game = Some(start.game_id.clone());
+                    }
                 }
+                SessionEvent::DemoSkipped {
+                    fingerprint,
+                    frames,
+                    score,
+                } => {
+                    self.demos_skipped += 1;
+                    info!(fingerprint = %fingerprint, frames, score = ?score,
+                          total = self.demos_skipped,
+                          "attract-mode demo skipped: not published, not uploaded");
+                    self.last_demo_at = Some(payload::now());
+                    self.recording_demo = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A finished recording of an attract-mode demo: deleted, or kept for
+    /// diagnosis with `session.demo.keep_recordings` (the newest few).
+    fn discard_demo_recording(&mut self, path: &Path) {
+        self.recording_demo = false;
+        self.recording_game = None;
+        if self.cfg.session.demo.keep_recordings {
+            let dir = self.cfg.state_dir().join("demo");
+            let kept = std::fs::create_dir_all(&dir).and_then(|()| {
+                let name = path.file_name().unwrap_or_default();
+                std::fs::rename(path, dir.join(name))
+            });
+            match kept {
+                Ok(()) => {
+                    prune_newest(&dir, DEMO_RECORDINGS_KEPT);
+                    info!(dir = %dir.display(), "demo recording kept for diagnosis");
+                    return;
+                }
+                Err(e) => warn!(error = %e, "could not keep the demo recording"),
+            }
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => info!(path = %path.display(), "demo recording deleted, not uploaded"),
+            Err(e) => {
+                warn!(error = %e, path = %path.display(), "could not delete the demo recording")
             }
         }
     }
 
     fn queue_upload(&mut self, path: PathBuf) {
+        // A recording no announced game owns, of a demo (skipped, or still
+        // held while the recorder already stopped), never leaves the station.
+        if self.recording_game.is_none() && (self.recording_demo || self.session.holding()) {
+            self.discard_demo_recording(&path);
+            return;
+        }
+        self.recording_demo = false;
         let Some(queue) = &self.uploads else {
             self.recording_game = None;
             return;
@@ -961,6 +1085,8 @@ impl Station {
                 SessionEvent::Start(p) => (topic::GAME_START, serde_json::to_string(p)),
                 SessionEvent::Cheat(p) => (topic::CHEAT, serde_json::to_string(p)),
                 SessionEvent::End(p) => (topic::GAME_END, serde_json::to_string(p)),
+                // Local only: a demo leaves no trace on the host.
+                SessionEvent::DemoSkipped { .. } => continue,
             };
             match json {
                 Ok(json) => {
@@ -1041,6 +1167,9 @@ impl Station {
             reader_fw: rfid.info.as_ref().map(|i| i.fw.clone()),
             reader_serial: rfid.info.as_ref().map(|i| i.serial.clone()),
             game_id: self.session.game_id().map(str::to_owned),
+            demo: self.session.demo_state(),
+            demos_skipped: self.demos_skipped,
+            last_demo_at: self.last_demo_at.clone(),
             fps: 0.0,
             dropped_frames: 0,
             perf: None,
@@ -1177,6 +1306,7 @@ impl Station {
     fn poll_remote_restart(&mut self) {
         if !self.remote.restart_after_game
             || self.session.game_id().is_some()
+            || self.session.holding()
             || self.update.is_some()
         {
             return;

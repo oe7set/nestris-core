@@ -1,0 +1,235 @@
+[
+  {
+    "id": "nes-ntsc-event",
+    "rom": "NES Tetris (NTSC), Retroverse event ROM; demo recorded by the stations 2026-11",
+    "steps": [
+      {
+        "score": 0,
+        "lines": 0,
+        "level": 0,
+        "next": "J"
+      },
+      {
+        "score": 11,
+        "lines": 0,
+        "level": 0,
+        "next": "T"
+      },
+      {
+        "score": 23,
+        "lines": 0,
+        "level": 0,
+        "next": "S"
+      },
+      {
+        "score": 35,
+        "lines": 0,
+        "level": 0,
+        "next": "Z"
+      },
+      {
+        "score": 45,
+        "lines": 0,
+        "level": 0,
+        "next": "J"
+      },
+      {
+        "score": 96,
+        "lines": 1,
+        "level": 0,
+        "next": "T"
+      },
+      {
+        "score": 100,
+        "lines": 1,
+        "level": 0,
+        "next": "S"
+      },
+      {
+        "score": 111,
+        "lines": 1,
+        "level": 0,
+        "next": "Z"
+      },
+      {
+        "score": 120,
+        "lines": 1,
+        "level": 0,
+        "next": "J"
+      },
+      {
+        "score": 171,
+        "lines": 2,
+        "level": 0,
+        "next": "S"
+      },
+      {
+        "score": 182,
+        "lines": 2,
+        "level": 0,
+        "next": "Z"
+      },
+      {
+        "score": 190,
+        "lines": 2,
+        "level": 0,
+        "next": "L"
+      },
+      {
+        "score": 200,
+        "lines": 2,
+        "level": 0,
+        "next": "Z"
+      },
+      {
+        "score": 215,
+        "lines": 2,
+        "level": 0,
+        "next": "J"
+      },
+      {
+        "score": 325,
+        "lines": 4,
+        "level": 0,
+        "next": "T"
+      },
+      {
+        "score": 336,
+        "lines": 4,
+        "level": 0,
+        "next": "T"
+      },
+      {
+        "score": 385,
+        "lines": 5,
+        "level": 0,
+        "next": "S"
+      },
+      {
+        "score": 395,
+        "lines": 5,
+        "level": 0,
+        "next": "I"
+      },
+      {
+        "score": 400,
+        "lines": 5,
+        "level": 0
+      },
+      {
+        "score": 411,
+        "lines": 5,
+        "level": 0,
+        "next": "O"
+      },
+      {
+        "score": 424,
+        "lines": 5,
+        "level": 0,
+        "next": "J"
+      },
+      {
+        "score": 434,
+        "lines": 5,
+        "level": 0,
+        "next": "S"
+      },
+      {
+        "score": 443,
+        "lines": 5,
+        "level": 0,
+        "next": "Z"
+      },
+      {
+        "score": 451,
+        "lines": 5,
+        "level": 0,
+        "next": "L"
+      },
+      {
+        "score": 458,
+        "lines": 5,
+        "level": 0,
+        "next": "Z"
+      },
+      {
+        "score": 466,
+        "lines": 5,
+        "level": 0,
+        "next": "L"
+      },
+      {
+        "score": 473,
+        "lines": 5,
+        "level": 0,
+        "next": "I"
+      },
+      {
+        "score": 485,
+        "lines": 5,
+        "level": 0,
+        "next": "O"
+      },
+      {
+        "score": 1696,
+        "lines": 9,
+        "level": 0,
+        "next": "L"
+      },
+      {
+        "score": 1700,
+        "lines": 9,
+        "level": 0,
+        "next": "Z"
+      },
+      {
+        "score": 1715,
+        "lines": 9,
+        "level": 0,
+        "next": "L"
+      },
+      {
+        "score": 1724,
+        "lines": 9,
+        "level": 0,
+        "next": "I"
+      },
+      {
+        "score": 1732,
+        "lines": 9,
+        "level": 0,
+        "next": "O"
+      },
+      {
+        "score": 1943,
+        "lines": 11,
+        "level": 1,
+        "next": "J"
+      },
+      {
+        "score": 1953,
+        "lines": 11,
+        "level": 1,
+        "next": "T"
+      },
+      {
+        "score": 2164,
+        "lines": 13,
+        "level": 1,
+        "next": "S"
+      },
+      {
+        "score": 2175,
+        "lines": 13,
+        "level": 1,
+        "next": "I"
+      },
+      {
+        "score": 2185,
+        "lines": 13,
+        "level": 1,
+        "next": "T"
+      }
+    ]
+  }
+]

@@ -4,6 +4,24 @@ The section of a version is the text of its GitHub release
 (`.github/scripts/release_notes.py`). NestrisLTM reads the station packages
 of a release (`nestris-station_<version>-1_<arch>.deb`) for station updates.
 
+## 0.4.0
+
+- **Attract-mode demo detection**: the NES Tetris demo (title screen left
+  alone) is no longer recorded as a game. The station compares games started
+  from the title screen with known demo fingerprints and drops a demo
+  entirely, also when it is aborted early: no `game_start`/`game_end`, no
+  recording, no upload. Games started through the type/level select are real
+  at once and never delayed; any doubt makes a game real. See
+  `docs/STATION.md`, "Demo detection".
+- `status` and `live` carry `demo` (`checking` / `demo` / `null`); `status`
+  also `demos_skipped` and `last_demo_at`.
+- `[session.demo]` config (remote-settable); extra fingerprints for other ROMs
+  in `/etc/nestris-station/demo/*.json`.
+- `nestris demo learn` / `nestris demo check`: learn a fingerprint from
+  recordings of a demo, check recordings against the known demos.
+- A finished recording that belongs to no announced game is no longer
+  uploaded under the previous game's id when it is a demo.
+
 ## 0.3.1
 
 - **Fixed wrong scores**: a station could switch to reading SCORE as a

@@ -5,6 +5,7 @@
 
 mod compare;
 mod config_load;
+mod demo;
 mod screens;
 mod verify;
 
@@ -147,6 +148,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: screens::ScreensCmd,
     },
+    /// Attract-mode demo fingerprints: learn one from recordings, check
+    /// recordings against the known demos.
+    Demo {
+        #[command(subcommand)]
+        cmd: demo::DemoCmd,
+    },
     /// Diff the full Rust pipeline against the Python oracle's stage dumps.
     Verify {
         /// Fixtures directory (defaults to $NESTRIS_FIXTURES_DIR).
@@ -267,6 +274,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Screens { cmd } => screens::run(cmd),
+        Cmd::Demo { cmd } => demo::run(cmd),
         Cmd::Verify {
             fixtures,
             stages,

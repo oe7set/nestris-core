@@ -10,6 +10,7 @@
 //! [`OutputFrame`]: crate::output::OutputFrame
 
 pub mod cheat;
+pub mod demo;
 pub mod validate;
 
 use serde::{Deserialize, Serialize};

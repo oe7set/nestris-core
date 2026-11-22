@@ -121,6 +121,16 @@ min_game_frames = 120
 # A game is closed after this many seconds without a picture.
 signal_lost_end_s = 30.0
 
+[session.demo]
+# Attract-mode demo detection (docs/STATION.md, "Demo detection"): a demo is
+# never published or uploaded. false treats every game as real.
+enabled = true
+# Matched demo steps from the title screen / with no menu seen.
+min_match_steps = 6
+min_match_steps_unknown_entry = 10
+# Keep the 20 newest demo recordings in <state_dir>/demo instead of deleting.
+keep_recordings = false
+
 [integrity]
 # The Select trick awards a flat 10 000 points.
 cheat_points = 10000

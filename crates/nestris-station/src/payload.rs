@@ -39,6 +39,13 @@ pub struct Status {
     pub reader_fw: Option<String>,
     pub reader_serial: Option<String>,
     pub game_id: Option<String>,
+    /// Attract-mode demo state of the running game (since 0.4.0): `checking`
+    /// while a game from the title screen is compared with the known demos,
+    /// `demo` once it is one, else `null`.
+    pub demo: Option<&'static str>,
+    /// Demos skipped since the station started, and when the last one ended.
+    pub demos_skipped: u64,
+    pub last_demo_at: Option<String>,
     /// Processed frames per second (also `perf.fps`).
     pub fps: f64,
     pub dropped_frames: u64,
@@ -92,6 +99,10 @@ pub struct Live {
     /// active play (menus, pause: the console hides the board while paused)
     /// or with `mqtt.live_playfield = false`.
     pub playfield: Option<Vec<String>>,
+    /// Attract-mode demo state (since 0.4.0): `checking` while a game from
+    /// the title screen is compared with the known demos, `demo` once it is
+    /// one, else `null`. While set, `game_id` is `null`: no game runs.
+    pub demo: Option<&'static str>,
     /// Running number of this message (since 0.3.0); a gap means `live`
     /// messages were lost on the way.
     #[serde(skip_serializing_if = "Option::is_none")]

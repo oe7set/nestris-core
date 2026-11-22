@@ -12,6 +12,12 @@
 //!   when a game-over screen was seen, else `reset`), a new game
 //!   (`reset`), no usable picture for `signal_lost_end_s` (`signal_lost`),
 //!   or station shutdown (`shutdown`).
+//! - **Demo**: a game entered straight from the title screen is held back
+//!   (nothing announced) while the [`DemoDetector`] compares it with the
+//!   known attract-mode demos. A demo is dropped without a trace
+//!   ([`SessionEvent::DemoSkipped`]); any contradiction makes it a normal
+//!   game, announced with its original start time. Games entered through
+//!   the type/level select menus are never held.
 
 use std::time::Duration;
 
@@ -19,6 +25,7 @@ use chrono::{DateTime, Utc};
 use nestris_engine::enums::GameState;
 use nestris_engine::integrity::IntegrityConfig;
 use nestris_engine::integrity::cheat::{CheatDetector, IntegrityEvent};
+use nestris_engine::integrity::demo::{DemoDetector, DemoVerdict, EntryTracker, Fingerprint};
 use nestris_engine::integrity::validate::{GameValidator, Severity, score_limit};
 use nestris_engine::output::{Fields, GameStats, OutputFrame};
 use nestris_engine::state::plausibility::infer_start_level;
@@ -58,6 +65,12 @@ pub enum SessionEvent {
     Start(GameStart),
     Cheat(Cheat),
     End(Box<GameEnd>),
+    /// An attract-mode demo ended; nothing of it was published.
+    DemoSkipped {
+        fingerprint: String,
+        frames: u64,
+        score: Option<i64>,
+    },
 }
 
 struct Active {
@@ -81,6 +94,10 @@ struct Active {
     /// Consecutive in-game frames above the score limit.
     over_limit: u32,
     suspect_logged: bool,
+    demo: DemoDetector,
+    demo_logged: bool,
+    /// The player a held game would get if announced now.
+    held_player: Option<Player>,
 }
 
 impl Active {
@@ -124,6 +141,8 @@ pub struct SessionTracker {
     station: String,
     grace: Duration,
     active: Option<Active>,
+    entry: EntryTracker,
+    fingerprints: Vec<Fingerprint>,
 }
 
 impl SessionTracker {
@@ -139,7 +158,30 @@ impl SessionTracker {
             station,
             grace,
             active: None,
+            entry: EntryTracker::new(),
+            fingerprints: nestris_engine::integrity::demo::builtin_fingerprints(),
         }
+    }
+
+    /// Replace the known demo fingerprints (built-in plus extra files).
+    pub fn set_fingerprints(&mut self, fingerprints: Vec<Fingerprint>) {
+        self.fingerprints = fingerprints;
+    }
+
+    /// The demo state of the running game: `checking` while a game from the
+    /// title screen is compared with the known demos, `demo` once it is one.
+    pub fn demo_state(&self) -> Option<&'static str> {
+        let a = self.active.as_ref().filter(|a| !a.announced)?;
+        match a.demo.verdict() {
+            DemoVerdict::Pending => Some("checking"),
+            DemoVerdict::Demo(_) => Some("demo"),
+            DemoVerdict::Real(_) => None,
+        }
+    }
+
+    /// A game is running that is held back (may be the demo, or is one).
+    pub fn holding(&self) -> bool {
+        self.demo_state().is_some()
     }
 
     /// The announced game's id, if a game is running.
@@ -153,6 +195,7 @@ impl SessionTracker {
     /// Feed one output frame.
     pub fn push(&mut self, out: &OutputFrame, rfid: &RfidSnapshot) -> Vec<SessionEvent> {
         let mut events = Vec::new();
+        self.entry.push(out.game_state);
         let new_game = out
             .events
             .iter()
@@ -168,6 +211,25 @@ impl SessionTracker {
         };
 
         a.validator.push(out);
+        let was_pending = a.demo.verdict() == &DemoVerdict::Pending;
+        match a.demo.push(out).clone() {
+            DemoVerdict::Demo(id) if !a.demo_logged => {
+                a.demo_logged = true;
+                info!(fingerprint = %id, entry = ?a.demo.entry(), frames = a.ingame_frames,
+                      "attract-mode demo detected, not recorded");
+            }
+            DemoVerdict::Real(reason) if was_pending => {
+                info!(
+                    reason = reason.as_str(),
+                    frames = a.ingame_frames,
+                    "held game is not the demo, announcing it"
+                );
+            }
+            _ => {}
+        }
+        if a.demo.is_candidate() {
+            a.held_player = rfid.player_for_game(self.grace);
+        }
         let detected = a.detector.push(out);
         if a.announced {
             events.extend(
@@ -202,25 +264,12 @@ impl SessionTracker {
                 // A real game shows a readable SCORE; picture noise that only
                 // classifies as in-game never does.
                 if !a.announced
+                    && !a.demo.is_candidate()
                     && a.ingame_frames >= self.cfg.min_game_frames
                     && a.last_fields.score.is_some()
                 {
-                    a.announced = true;
-                    a.player = rfid.player_for_game(self.grace);
-                    info!(game_id = %a.game_id, player = ?a.player, "game started");
-                    events.push(SessionEvent::Start(GameStart {
-                        game_id: a.game_id.clone(),
-                        station: self.station.clone(),
-                        player: a.player.clone(),
-                        started_at: payload::stamp(a.started_at),
-                        start_level: a.start_level,
-                    }));
-                    let early = std::mem::take(&mut a.early_cheats);
-                    events.extend(
-                        early
-                            .into_iter()
-                            .filter_map(|e| cheat_event(a, &self.station, e)),
-                    );
+                    let player = rfid.player_for_game(self.grace);
+                    events.extend(announce(a, &self.station, player));
                 } else if a.announced && a.player.is_none() && rfid.present.is_some() {
                     a.player = rfid.present.clone();
                     info!(game_id = %a.game_id, player = ?a.player, "player assigned mid-game");
@@ -290,12 +339,16 @@ impl SessionTracker {
     /// stack while in play).
     pub fn live(&self, out: &OutputFrame, rfid: &RfidSnapshot, with_playfield: bool) -> Live {
         let game = self.active.as_ref().filter(|a| a.announced);
+        let demo = self.demo_state();
         let s = &out.stats;
         Live {
             game_id: game.map(|a| a.game_id.clone()),
-            player: game
-                .and_then(|a| a.player.clone())
-                .or_else(|| rfid.present.clone()),
+            player: if demo == Some("demo") {
+                None
+            } else {
+                game.and_then(|a| a.player.clone())
+                    .or_else(|| rfid.present.clone())
+            },
             game_state: game_state_str(out.game_state),
             score: out.fields.score,
             lines: out.fields.lines,
@@ -315,6 +368,7 @@ impl SessionTracker {
             } else {
                 None
             },
+            demo,
             seq: None,
             frame_age_ms: None,
             ts: payload::now(),
@@ -323,6 +377,11 @@ impl SessionTracker {
 
     fn start(&mut self) {
         let started_at = Utc::now();
+        let demo = DemoDetector::new(
+            self.cfg.demo.clone(),
+            self.fingerprints.clone(),
+            self.entry.entry(),
+        );
         self.active = Some(Active {
             game_id: format!("{}-{}", self.station, started_at.timestamp_millis()),
             started_at,
@@ -341,6 +400,9 @@ impl SessionTracker {
             first_values: (None, None),
             over_limit: 0,
             suspect_logged: false,
+            demo,
+            demo_logged: false,
+            held_player: None,
         });
     }
 
@@ -348,6 +410,33 @@ impl SessionTracker {
         let Some(mut a) = self.active.take() else {
             return Vec::new();
         };
+        let mut events: Vec<SessionEvent> = Vec::new();
+        if !a.announced && a.demo.is_candidate() {
+            match a.demo.finish().clone() {
+                DemoVerdict::Demo(fingerprint) => {
+                    info!(reason = reason.as_str(), "attract-mode demo ended");
+                    return vec![SessionEvent::DemoSkipped {
+                        fingerprint,
+                        frames: a.ingame_frames,
+                        score: a.last_fields.score,
+                    }];
+                }
+                DemoVerdict::Real(why) => {
+                    // A held game that turned out real only at its end: it
+                    // still gets announced if it is long enough.
+                    if a.ingame_frames >= self.cfg.min_game_frames && a.last_fields.score.is_some()
+                    {
+                        info!(
+                            reason = why.as_str(),
+                            "held game ended unlike the demo, announcing it"
+                        );
+                        let player = a.held_player.clone();
+                        events.extend(announce(&mut a, &self.station, player));
+                    }
+                }
+                DemoVerdict::Pending => {}
+            }
+        }
         if !a.announced {
             // A few frames are routine: the engine confirms a new game a
             // handful of frames after the first in-game frame.
@@ -359,12 +448,12 @@ impl SessionTracker {
             }
             return Vec::new();
         }
-        let mut events: Vec<SessionEvent> = a
-            .detector
-            .finish()
-            .into_iter()
-            .filter_map(|e| cheat_event(&a, &self.station, e))
-            .collect();
+        events.extend(
+            a.detector
+                .finish()
+                .into_iter()
+                .filter_map(|e| cheat_event(&a, &self.station, e)),
+        );
         let report = a.validator.report(&a.detector, &a.last_stats);
         let ended_at = Utc::now();
         let s = &a.last_stats;
@@ -408,6 +497,24 @@ impl SessionTracker {
         events.push(SessionEvent::End(Box::new(end)));
         events
     }
+}
+
+/// Announce a game: its start (with the original start time) and the cheat
+/// detections made before.
+fn announce(a: &mut Active, station: &str, player: Option<Player>) -> Vec<SessionEvent> {
+    a.announced = true;
+    a.player = player;
+    info!(game_id = %a.game_id, player = ?a.player, "game started");
+    let mut events = vec![SessionEvent::Start(GameStart {
+        game_id: a.game_id.clone(),
+        station: station.to_string(),
+        player: a.player.clone(),
+        started_at: payload::stamp(a.started_at),
+        start_level: a.start_level,
+    })];
+    let early = std::mem::take(&mut a.early_cheats);
+    events.extend(early.into_iter().filter_map(|e| cheat_event(a, station, e)));
+    events
 }
 
 fn cheat_event(a: &Active, station: &str, event: IntegrityEvent) -> Option<SessionEvent> {
@@ -565,6 +672,7 @@ mod tests {
                 SessionEvent::Start(_) => "start",
                 SessionEvent::Cheat(_) => "cheat",
                 SessionEvent::End(_) => "end",
+                SessionEvent::DemoSkipped { .. } => "demo",
             })
             .collect();
         assert_eq!(kinds, vec!["start", "cheat", "end"]);
@@ -811,5 +919,224 @@ mod tests {
         r.feed(GameState::InGame, 0, 0, 200, &card());
         let events = r.t.shutdown();
         assert!(matches!(&events[..], [SessionEvent::End(e)] if e.end_reason == "shutdown"));
+    }
+
+    // ---- attract-mode demo -------------------------------------------
+
+    fn demo_frames(name: &str) -> Vec<OutputFrame> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/demo")
+            .join(name);
+        let file = nestris_ngf::replay::ReplayFile::load(&path).unwrap();
+        let mut engine = nestris_ngf::replay::ReplayEngine::new(file);
+        engine.extended_stats = false;
+        (0..engine.frame_count())
+            .map(|i| engine.output_at(i))
+            .collect()
+    }
+
+    fn menu(state: GameState) -> OutputFrame {
+        let mut f = frame(0, state, 0, 0, false);
+        f.fields = Fields::default();
+        f
+    }
+
+    fn kinds(events: &[SessionEvent]) -> Vec<&'static str> {
+        events
+            .iter()
+            .map(|e| match e {
+                SessionEvent::Start(_) => "start",
+                SessionEvent::Cheat(_) => "cheat",
+                SessionEvent::End(_) => "end",
+                SessionEvent::DemoSkipped { .. } => "demo",
+            })
+            .collect()
+    }
+
+    /// Menus, then the game frames (cut after `cut_s` seconds), then the
+    /// title screen again.
+    fn play_after(
+        t: &mut SessionTracker,
+        before: &[GameState],
+        game: &[OutputFrame],
+        cut_s: Option<f64>,
+    ) -> Vec<SessionEvent> {
+        let rfid = card();
+        let mut events = Vec::new();
+        for &state in before {
+            for _ in 0..60 {
+                events.extend(t.push(&menu(state), &rfid));
+            }
+        }
+        let t0 = game[0].ts;
+        for f in game {
+            if cut_s.is_some_and(|c| f.ts - t0 > c) {
+                break;
+            }
+            events.extend(t.push(f, &rfid));
+        }
+        for _ in 0..60 {
+            events.extend(t.push(&menu(GameState::Title), &rfid));
+        }
+        events
+    }
+
+    #[test]
+    fn demo_from_the_title_screen_is_skipped() {
+        for name in [
+            "game-1078.ngf.gz",
+            "game-1086.ngf.gz",
+            "game-2524.ngf.gz",
+            "game-2551.ngf.gz",
+        ] {
+            let mut t = tracker();
+            let events = play_after(&mut t, &[GameState::Title], &demo_frames(name), None);
+            assert_eq!(kinds(&events), vec!["demo"], "{name}");
+        }
+    }
+
+    #[test]
+    fn aborted_demo_is_skipped() {
+        let game = demo_frames("game-2524.ngf.gz");
+        for cut in [3.0, 6.0, 10.0, 20.0, 50.0] {
+            let mut t = tracker();
+            let events = play_after(&mut t, &[GameState::Title], &game, Some(cut));
+            assert_eq!(kinds(&events), vec!["demo"], "cut at {cut} s");
+        }
+    }
+
+    #[test]
+    fn demo_joined_mid_way_is_skipped() {
+        // No menus seen (the station started during the demo).
+        let game = demo_frames("game-1086.ngf.gz");
+        let mut t = tracker();
+        let events = play_after(&mut t, &[], &game[600..], None);
+        assert_eq!(kinds(&events), vec!["demo"]);
+    }
+
+    #[test]
+    fn the_same_game_entered_through_the_menus_is_real() {
+        // Even a game that plays exactly like the demo is real when it was
+        // started from the level select: no delay, nothing held back.
+        let game = demo_frames("game-1078.ngf.gz");
+        let mut t = tracker();
+        let events = play_after(
+            &mut t,
+            &[
+                GameState::Title,
+                GameState::TypeSelect,
+                GameState::LevelSelect,
+            ],
+            &game,
+            None,
+        );
+        assert_eq!(kinds(&events), vec!["start", "end"]);
+    }
+
+    #[test]
+    fn backing_out_to_the_title_before_the_demo_still_skips_it() {
+        let game = demo_frames("game-1078.ngf.gz");
+        let mut t = tracker();
+        let events = play_after(
+            &mut t,
+            &[
+                GameState::TypeSelect,
+                GameState::LevelSelect,
+                GameState::TypeSelect,
+                GameState::Title,
+            ],
+            &game,
+            None,
+        );
+        assert_eq!(kinds(&events), vec!["demo"]);
+    }
+
+    #[test]
+    fn held_game_unlike_the_demo_is_announced_with_its_start_time() {
+        // From the title screen (a misread menu), level 0, but the player's
+        // first piece scores differently.
+        let rfid = card();
+        let mut t = tracker();
+        let mut events = Vec::new();
+        for _ in 0..60 {
+            events.extend(t.push(&menu(GameState::Title), &rfid));
+        }
+        let mut seq = 0;
+        fn feed(
+            t: &mut SessionTracker,
+            seq: &mut i64,
+            score: i64,
+            n: i64,
+            rfid: &RfidSnapshot,
+            events: &mut Vec<SessionEvent>,
+        ) {
+            for _ in 0..n {
+                let mut f = frame(*seq, GameState::InGame, score, 0, false);
+                f.fields.level = Some(0);
+                f.fields.next_piece = Some(nestris_engine::enums::Piece::J);
+                events.extend(t.push(&f, rfid));
+                *seq += 1;
+            }
+        }
+        feed(&mut t, &mut seq, 0, 150, &rfid, &mut events);
+        assert!(events.is_empty(), "held while it may be the demo");
+        let f = frame(seq, GameState::InGame, 0, 0, false);
+        let live = t.live(&f, &rfid, false);
+        assert_eq!((live.demo, live.game_id), (Some("checking"), None));
+        assert_eq!(t.demo_state(), Some("checking"));
+
+        feed(&mut t, &mut seq, 7, 100, &rfid, &mut events);
+        assert_eq!(kinds(&events), vec!["start"]);
+        let SessionEvent::Start(start) = &events[0] else {
+            unreachable!()
+        };
+        let start = start.clone();
+        assert_eq!(start.player.as_ref().unwrap().uid, "ABCD");
+        feed(&mut t, &mut seq, 30, 100, &rfid, &mut events);
+        for _ in 0..40 {
+            events.extend(t.push(&menu(GameState::GameOver), &rfid));
+        }
+        assert_eq!(kinds(&events), vec!["start", "end"]);
+        let SessionEvent::End(end) = &events[1] else {
+            unreachable!()
+        };
+        assert_eq!(end.started_at, start.started_at);
+    }
+
+    #[test]
+    fn live_view_during_the_demo() {
+        let game = demo_frames("game-2551.ngf.gz");
+        let rfid = card();
+        let mut t = tracker();
+        for _ in 0..60 {
+            t.push(&menu(GameState::Title), &rfid);
+        }
+        for f in &game[..1000] {
+            t.push(f, &rfid);
+        }
+        let live = t.live(&game[1000], &rfid, false);
+        assert_eq!(live.demo, Some("demo"));
+        assert!(live.game_id.is_none());
+        assert!(live.player.is_none());
+        assert!(t.holding());
+    }
+
+    #[test]
+    fn demo_detection_can_be_switched_off() {
+        let mut cfg = SessionSection::default();
+        cfg.demo.enabled = false;
+        let mut t = SessionTracker::new(
+            cfg,
+            IntegrityConfig::default(),
+            "st1".into(),
+            Duration::from_secs(60),
+        );
+        let events = play_after(
+            &mut t,
+            &[GameState::Title],
+            &demo_frames("game-1078.ngf.gz"),
+            None,
+        );
+        assert_eq!(kinds(&events), vec!["start", "end"]);
     }
 }
